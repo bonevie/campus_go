@@ -11,7 +11,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { Picker } from "@react-native-picker/picker";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
-export default function SignupScreen({ navigation }) {
+export default function SignUp({ navigation }) {
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [idNumber, setIdNumber] = useState("");
@@ -20,23 +20,38 @@ export default function SignupScreen({ navigation }) {
   const [confirmPass, setConfirmPass] = useState("");
 
   const handleSignup = async () => {
-    if (!fullName || !email || !idNumber || !password) {
+    // empty fields
+    if (!fullName || !email || !idNumber || !password || !confirmPass) {
       alert("Please complete all fields.");
       return;
     }
 
+    // bisu email validation
+    if (!email.toLowerCase().endsWith("@bisu.edu.ph")) {
+      alert("Please use a valid BISU email (@bisu.edu.ph)");
+      return;
+    }
+
+    // confirm pass
     if (password !== confirmPass) {
       alert("Passwords do not match!");
       return;
     }
 
-    // GET EXISTING USERS
+    // password strength
+    if (password.length < 6) {
+      alert("Password must be at least 6 characters.");
+      return;
+    }
+
     const storedUsers = await AsyncStorage.getItem("users");
     const users = storedUsers ? JSON.parse(storedUsers) : [];
 
-    // CHECK IF EMAIL OR ID ALREADY EXISTS
+    // check duplicate
     const exists = users.find(
-      (u) => u.email.toLowerCase() === email.toLowerCase() || u.idNumber === idNumber
+      (u) =>
+        u.email.toLowerCase() === email.toLowerCase() ||
+        u.idNumber === idNumber
     );
 
     if (exists) {
@@ -44,91 +59,98 @@ export default function SignupScreen({ navigation }) {
       return;
     }
 
-    // NEW USER OBJECT
-    const newUser = { fullName, email, idNumber, role, password };
+    const newUser = {
+      fullName,
+      email: email.toLowerCase(),
+      idNumber,
+      role,
+      password,
+    };
 
-    // SAVE TO STORAGE
     users.push(newUser);
     await AsyncStorage.setItem("users", JSON.stringify(users));
 
     alert("Account created successfully!");
-
     navigation.replace("Login");
   };
 
   return (
     <LinearGradient colors={["#167CF2", "#2A9EFE"]} style={{ flex: 1 }}>
-      <ScrollView contentContainerStyle={styles.container}>
-        
-        <TouchableOpacity onPress={() => navigation.goBack()}>
-          <Text style={styles.backText}>← Back to Login</Text>
-        </TouchableOpacity>
-
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>Create Account</Text>
-
-          <Text style={styles.label}>Full Name</Text>
-          <TextInput
-            placeholder="Juan Dela Cruz"
-            style={styles.input}
-            value={fullName}
-            onChangeText={setFullName}
-          />
-
-          <Text style={styles.label}>BISU Email</Text>
-          <TextInput
-            placeholder="student@bisu.edu.ph"
-            style={styles.input}
-            value={email}
-            onChangeText={setEmail}
-          />
-
-          <Text style={styles.label}>ID Number</Text>
-          <TextInput
-            placeholder="2024-001"
-            style={styles.input}
-            value={idNumber}
-            onChangeText={setIdNumber}
-          />
-
-          <Text style={styles.label}>Role</Text>
-          <View style={styles.pickerBox}>
-            <Picker selectedValue={role} onValueChange={setRole}>
-              <Picker.Item label="Student" value="Student" />
-              <Picker.Item label="Faculty" value="Faculty" />
-            </Picker>
-          </View>
-
-          <Text style={styles.label}>Password</Text>
-          <TextInput
-            placeholder="Enter password"
-            style={styles.input}
-            secureTextEntry
-            value={password}
-            onChangeText={setPassword}
-          />
-
-          <Text style={styles.label}>Confirm Password</Text>
-          <TextInput
-            placeholder="Confirm password"
-            style={styles.input}
-            secureTextEntry
-            value={confirmPass}
-            onChangeText={setConfirmPass}
-          />
-
-          <TouchableOpacity style={styles.signupBtn} onPress={handleSignup}>
-            <Text style={styles.signupText}>Sign Up</Text>
+      <ScrollView contentContainerStyle={{ flexGrow: 1 }}>
+        <View style={styles.container}>
+          <TouchableOpacity onPress={() => navigation.goBack()}>
+            <Text style={styles.backText}>← Back to Login</Text>
           </TouchableOpacity>
-        </View>
 
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>Create Account</Text>
+
+            <Text style={styles.label}>Full Name</Text>
+            <TextInput
+              placeholder="Juan Dela Cruz"
+              style={styles.input}
+              value={fullName}
+              onChangeText={setFullName}
+            />
+
+            <Text style={styles.label}>BISU Email</Text>
+            <TextInput
+              placeholder="student@bisu.edu.ph"
+              style={styles.input}
+              value={email}
+              onChangeText={setEmail}
+              autoCapitalize="none"
+            />
+
+            <Text style={styles.label}>ID Number</Text>
+            <TextInput
+              placeholder="2024-001"
+              style={styles.input}
+              value={idNumber}
+              onChangeText={setIdNumber}
+            />
+
+            <Text style={styles.label}>Role</Text>
+            <View style={styles.pickerBox}>
+              <Picker selectedValue={role} onValueChange={setRole}>
+                <Picker.Item label="Student" value="Student" />
+                <Picker.Item label="Faculty" value="Faculty" />
+              </Picker>
+            </View>
+
+            <Text style={styles.label}>Password</Text>
+            <TextInput
+              placeholder="Enter password"
+              secureTextEntry
+              style={styles.input}
+              value={password}
+              onChangeText={setPassword}
+            />
+
+            <Text style={styles.label}>Confirm Password</Text>
+            <TextInput
+              placeholder="Confirm password"
+              secureTextEntry
+              style={styles.input}
+              value={confirmPass}
+              onChangeText={setConfirmPass}
+            />
+
+            <TouchableOpacity style={styles.signupBtn} onPress={handleSignup}>
+              <Text style={styles.signupText}>Sign Up</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
       </ScrollView>
     </LinearGradient>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { padding: 25 },
+  container: {
+    flex: 1,
+    padding: 25,
+  },
   backText: {
     color: "white",
     marginTop: 45,

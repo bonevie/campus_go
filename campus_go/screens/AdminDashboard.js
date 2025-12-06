@@ -1,5 +1,5 @@
-// AdminDashboard.js
-import React, { useState } from "react";
+// AdminDashboard.js (Option 3: Gates as separate item type + image picker)
+import React, { useState, useContext, useEffect } from "react";
 import {
   View,
   Text,
@@ -9,145 +9,435 @@ import {
   SafeAreaView,
   Modal,
   TextInput,
+  Image,
+  Alert,
+  Switch,
+  Platform,
 } from "react-native";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Ionicons } from "@expo/vector-icons";
-import { useNavigation } from "@react-navigation/native";  // <-- FIX
+import { useNavigation } from "@react-navigation/native";
+import { BuildingsContext } from "./BuildingsContext";
+import * as ImagePicker from "expo-image-picker";
+
+const TYPE_PRESETS = [
+  { key: "general", label: "General" },
+  { key: "office", label: "Office" },
+  { key: "roomsOnly", label: "Rooms only" },
+];
+
+const COLOR_PRESETS = ["#1faa59", "#6a11cb", "#ff8800", "#4fc3f7", "#ffd54f", "#e57373"];
 
 export default function AdminDashboard() {
-  const navigation = useNavigation(); // <-- FIX
-
-  const [buildings, setBuildings] = useState([
-    {
-      id: 1,
-      name: "Technology Building",
-      department: "College of Technology",
-      rooms: ["D1", "D2", "D3", "D4", "D5"],
-    },
-    {
-      id: 2,
-      name: "IT Building",
-      department: "Information Technology",
-      rooms: ["A1", "A2", "B1", "B2", "C1"],
-    },
-  ]);
+  const navigation = useNavigation();
+  const { buildings, setBuildings } = useContext(BuildingsContext);
 
   const [modalVisible, setModalVisible] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+
+  // New: choose whether adding a "building" or "gate"
+  const [addKind, setAddKind] = useState("building"); // 'building' | 'gate'
+
+  // building fields
   const [newName, setNewName] = useState("");
   const [newDept, setNewDept] = useState("");
   const [newRooms, setNewRooms] = useState("");
+  const [newSteps, setNewSteps] = useState("");
+  const [newX, setNewX] = useState("");
+  const [newY, setNewY] = useState("");
+  const [floorPlan, setFloorPlan] = useState(null);
+  const [photo, setPhoto] = useState(null); // exterior / facade photo
+  const [newType, setNewType] = useState("general");
+  const [newColor, setNewColor] = useState("#1faa59");
 
-  const addBuilding = () => {
-    if (!newName.trim()) return;
+  // gate fields (separate)
+  const [gateIcon, setGateIcon] = useState(null);
+  const [gateIsPrimary, setGateIsPrimary] = useState(false);
 
-    const newBuilding = {
-      id: buildings.length + 1,
-      name: newName,
-      department: newDept,
-      rooms: newRooms.split(",").map((r) => r.trim()),
+  // utility
+  const safeNum = (v) => {
+    const n = Number(v);
+    return isNaN(n) ? 0 : n;
+  };
+
+  // Load buildings/gates, ensure defaults & backward compatibility
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const stored = await AsyncStorage.getItem("campusBuildings");
+        if (stored) {
+          const parsed = JSON.parse(stored).map((b) => ({
+            ...b,
+            // backwards compat: older items may not have 'kind'
+            kind: b.kind || "building",
+            x: safeNum(b.x),
+            y: safeNum(b.y),
+            stepsFromMainGate: safeNum(b.stepsFromMainGate),
+            rooms: Array.isArray(b.rooms) ? b.rooms : typeof b.rooms === "string" ? b.rooms.split(",").map(r => r.trim()) : [],
+            floorPlan: b.floorPlan || null,
+            type: b.type || "general",
+            color: b.color || "#1faa59",
+            isMainGate: !!b.isMainGate || (b.kind === "gate" && !!b.isMainGate),
+            gateIcon: b.gateIcon || null,
+          }));
+          setBuildings(parsed);
+        } else {
+          // initialize from context if available (ensure defaults)
+          const safe = (buildings || []).map((b) => ({
+            ...b,
+            kind: b.kind || "building",
+            x: safeNum(b.x),
+            y: safeNum(b.y),
+            stepsFromMainGate: safeNum(b.stepsFromMainGate),
+            rooms: Array.isArray(b.rooms) ? b.rooms : [],
+            floorPlan: b.floorPlan || null,
+            type: b.type || "general",
+            color: b.color || "#1faa59",
+            isMainGate: !!b.isMainGate,
+            gateIcon: b.gateIcon || null,
+          }));
+          setBuildings(safe);
+        }
+      } catch (e) {
+        console.log("LOAD ERROR:", e);
+      }
     };
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-    setBuildings([...buildings, newBuilding]);
-    setModalVisible(false);
+  const saveToStorage = async (data) => {
+    try {
+      await AsyncStorage.setItem("campusBuildings", JSON.stringify(data));
+    } catch (e) {
+      console.log("SAVE ERROR:", e);
+    }
+  };
+
+  const openAddModal = (kind = "building") => {
+    setAddKind(kind);
+    setEditingId(null);
+    // reset fields
     setNewName("");
     setNewDept("");
     setNewRooms("");
+    setNewSteps("");
+    setNewX("");
+    setNewY("");
+    setFloorPlan(null);
+    setPhoto(null);
+    setNewType("general");
+    setNewColor("#1faa59");
+    setGateIcon(null);
+    setGateIsPrimary(false);
+    setModalVisible(true);
   };
+
+  // edit either building or gate
+  const openEditModal = (item) => {
+    setEditingId(item.id);
+    setAddKind(item.kind || "building");
+    setNewName(item.name || "");
+    setNewDept(item.department || "");
+    setNewRooms(Array.isArray(item.rooms) ? item.rooms.join(", ") : item.rooms || "");
+    setNewSteps(String(item.stepsFromMainGate || ""));
+    setNewX(String(item.x || ""));
+    setNewY(String(item.y || ""));
+    setFloorPlan(item.floorPlan || null);
+    setPhoto(item.photo || null);
+    setNewType(item.type || "general");
+    setNewColor(item.color || "#1faa59");
+    setGateIcon(item.gateIcon || null);
+    setGateIsPrimary(!!item.isMainGate);
+    setModalVisible(true);
+  };
+
+  const pickImage = async (forGate = false) => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== "granted") {
+      Alert.alert("Permission required", "Permission is required to access photos.");
+      return;
+    }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      quality: 1,
+    });
+
+    if (!result.canceled) {
+      const uri = result.assets[0].uri;
+      if (forGate === true) setGateIcon(uri);
+      else if (forGate === 'photo') setPhoto(uri);
+      else setFloorPlan(uri);
+    }
+  };
+
+  const saveItem = () => {
+    if (!newName.trim()) {
+      Alert.alert("Validation", "Please provide a name.");
+      return;
+    }
+
+    const existing = buildings || [];
+    // generate id (numeric if possible)
+    const newId =
+      editingId ??
+      (existing.length ? Math.max(...existing.map((b) => Number(b.id) || 0)) + 1 : Date.now());
+
+    let updated = [...existing];
+
+    if (addKind === "gate") {
+      // If this gate set as primary, unset other primary gates
+      if (gateIsPrimary) {
+        updated = updated.map((it) => (it.kind === "gate" ? { ...it, isMainGate: false } : it));
+      }
+
+      const obj = {
+        id: newId,
+        kind: "gate",
+        name: newName.trim(),
+        x: safeNum(newX),
+        y: safeNum(newY),
+        gateIcon: gateIcon || null,
+        isMainGate: !!gateIsPrimary,
+      };
+
+      if (editingId === null) updated.push(obj);
+      else updated = updated.map((it) => (it.id === editingId ? obj : it));
+    } else {
+      // building
+      const obj = {
+        id: newId,
+        kind: "building",
+        name: newName.trim(),
+        department: newDept.trim(),
+        rooms: newRooms ? newRooms.split(",").map((r) => r.trim()) : [],
+        stepsFromMainGate: safeNum(newSteps),
+        x: safeNum(newX),
+        y: safeNum(newY),
+        floorPlan: floorPlan || null,
+        photo: photo || null,
+        type: newType || "general",
+        color: newColor || "#1faa59",
+        isMainGate: false,
+      };
+
+      if (editingId === null) updated.push(obj);
+      else updated = updated.map((it) => (it.id === editingId ? obj : it));
+    }
+
+    setBuildings(updated);
+    saveToStorage(updated);
+    setModalVisible(false);
+  };
+
+  const deleteItem = (id) => {
+    Alert.alert("Delete item?", "This action cannot be undone.", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Delete",
+        style: "destructive",
+        onPress: () => {
+          const updated = (buildings || []).filter((b) => b.id !== id);
+          setBuildings(updated);
+          saveToStorage(updated);
+        },
+      },
+    ]);
+  };
+
+  // small UI helpers
+  const TypeChooser = () => (
+    <View style={{ flexDirection: "row", marginBottom: 8 }}>
+      {TYPE_PRESETS.map((t) => (
+        <TouchableOpacity
+          key={t.key}
+          onPress={() => setNewType(t.key)}
+          style={[
+            styles.typeBtn,
+            newType === t.key ? { backgroundColor: "#333" } : { backgroundColor: "#eee" },
+          ]}
+        >
+          <Text style={{ color: newType === t.key ? "#fff" : "#333", fontWeight: "700" }}>{t.label}</Text>
+        </TouchableOpacity>
+      ))}
+    </View>
+  );
+
+  const ColorChooser = () => (
+    <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 10 }}>
+      {COLOR_PRESETS.map((c) => (
+        <TouchableOpacity
+          key={c}
+          onPress={() => setNewColor(c)}
+          style={[styles.colorSwatch, { backgroundColor: c, borderWidth: newColor === c ? 3 : 0, borderColor: "#222" }]}
+        />
+      ))}
+      <TextInput
+        value={newColor}
+        onChangeText={(t) => setNewColor(t.startsWith("#") ? t : `#${t}`)}
+        placeholder="#rrggbb"
+        style={[styles.input, { width: 110, paddingHorizontal: 8 }]}
+      />
+    </View>
+  );
+
+  const allItems = buildings || [];
 
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView showsVerticalScrollIndicator={false}>
         <View style={styles.headerCard}>
           <Text style={styles.headerTitle}>Admin Dashboard</Text>
-          <Text style={styles.headerSubtitle}>System Management</Text>
+          <Text style={styles.headerSubtitle}>Manage Campus Buildings & Gates</Text>
         </View>
 
-        {/* Building Section */}
-        <View style={styles.sectionHeader}>
-          <Text style={styles.sectionTitle}>Campus Buildings</Text>
+        <View style={styles.buttonRow}>
+          <TouchableOpacity style={styles.addButton} onPress={() => openAddModal("building")}>
+            <Ionicons name="business" size={18} color="#fff" />
+            <Text style={styles.addButtonText}>Add Building</Text>
+          </TouchableOpacity>
 
-          <TouchableOpacity
-            style={styles.addButton}
-            onPress={() => setModalVisible(true)}
-          >
-            <Ionicons name="add" size={24} color="#fff" />
+          <TouchableOpacity style={[styles.addButton, { backgroundColor: "#2a7dff" }]} onPress={() => openAddModal("gate")}>
+            <Ionicons name="md-enter" size={18} color="#fff" />
+            <Text style={styles.addButtonText}>Add Gate</Text>
           </TouchableOpacity>
         </View>
 
         <View style={styles.buildingList}>
-          {buildings.map((bldg) => (
-            <View key={bldg.id} style={styles.buildingCard}>
-              <Text style={styles.buildingName}>{bldg.name}</Text>
-              <Text style={styles.buildingDept}>{bldg.department}</Text>
+          {allItems.map((it) => (
+            <View key={it.id} style={styles.itemCard}>
+              <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                <View style={{ flexDirection: "row", gap: 12, alignItems: "center" }}>
+                  {it.kind === "gate" ? (
+                    <View style={{ alignItems: "center" }}>
+                      <View style={{ width: 46, height: 46, borderRadius: 10, backgroundColor: it.gateIcon ? "transparent" : "#2a7dff", overflow: "hidden", alignItems: "center", justifyContent: "center" }}>
+                        {it.gateIcon ? (
+                          <Image source={{ uri: it.gateIcon }} style={{ width: 46, height: 46, resizeMode: "cover" }} />
+                        ) : (
+                          <Ionicons name="md-enter" size={20} color="#fff" />
+                        )}
+                      </View>
+                      <Text style={{ fontSize: 11, color: "#444", marginTop: 4 }}>{it.isMainGate ? "Primary" : "Gate"}</Text>
+                    </View>
+                  ) : (
+                    <View style={{ width: 46, height: 46, borderRadius: 8, backgroundColor: it.color || "#1faa59" }} />
+                  )}
 
-              <View style={styles.roomContainer}>
-                {bldg.rooms.map((room, index) => (
-                  <Text key={index} style={styles.roomBox}>
-                    {room}
-                  </Text>
-                ))}
+                  <View>
+                    <Text style={styles.itemTitle}>{it.name}</Text>
+                    {it.kind === "building" && <Text style={styles.itemSub}>{it.department || ""}</Text>}
+                    <Text style={{ color: "#666", fontSize: 12 }}>{it.kind === "gate" ? `Position: (${it.x}, ${it.y})` : `Coords: (${it.x}, ${it.y}) • Steps: ${it.stepsFromMainGate || 0}`}</Text>
+                  </View>
+                </View>
+
+                <View style={{ flexDirection: "row" }}>
+                  <TouchableOpacity onPress={() => openEditModal(it)} style={styles.iconBtn}>
+                    <Ionicons name="create-outline" size={20} color="#6a11cb" />
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={() => deleteItem(it.id)} style={styles.iconBtn}>
+                    <Ionicons name="trash-outline" size={20} color="red" />
+                  </TouchableOpacity>
+                </View>
               </View>
+
+              {it.kind === "building" && it.rooms && Array.isArray(it.rooms) && (
+                <View style={{ flexDirection: "row", flexWrap: "wrap", marginTop: 8 }}>
+                  {it.rooms.map((r, i) => <Text key={i} style={styles.roomBox}>{r}</Text>)}
+                </View>
+              )}
             </View>
           ))}
         </View>
       </ScrollView>
 
-      {/* Add New Building Modal */}
+      {/* Modal */}
       <Modal visible={modalVisible} transparent animationType="slide">
         <View style={styles.modalContainer}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Add New Building</Text>
+            <Text style={styles.modalTitle}>{editingId ? "Edit Item" : addKind === "gate" ? "Add Gate" : "Add Building"}</Text>
 
-            <TextInput
-              style={styles.input}
-              placeholder="e.g. Engineering Building"
-              value={newName}
-              onChangeText={setNewName}
-            />
+            <TextInput style={styles.input} placeholder="Name" value={newName} onChangeText={setNewName} />
 
-            <TextInput
-              style={styles.input}
-              placeholder="e.g. College of Engineering"
-              value={newDept}
-              onChangeText={setNewDept}
-            />
+            {/* kind-specific fields */}
+            {addKind === "building" ? (
+              <>
+                <TextInput style={styles.input} placeholder="Department" value={newDept} onChangeText={setNewDept} />
+                <TextInput style={styles.input} placeholder="Rooms (comma separated)" value={newRooms} onChangeText={setNewRooms} />
+                <TextInput style={styles.input} placeholder="Steps From Main Gate" keyboardType="numeric" value={newSteps} onChangeText={setNewSteps} />
+                <TextInput style={styles.input} placeholder="X Position" keyboardType="numeric" value={newX} onChangeText={setNewX} />
+                <TextInput style={styles.input} placeholder="Y Position" keyboardType="numeric" value={newY} onChangeText={setNewY} />
 
-            <TextInput
-              style={styles.input}
-              placeholder="e.g. E1, E2, E3, Lab 1"
-              value={newRooms}
-              onChangeText={setNewRooms}
-            />
+                <View style={{ marginVertical: 8 }}>
+                  <Text style={{ fontWeight: "700", marginBottom: 6 }}>Type</Text>
+                  <View style={{ flexDirection: "row" }}>
+                    <TypeChooser />
+                  </View>
+                </View>
 
-            <TouchableOpacity
-              style={styles.addBuildingBtn}
-              onPress={addBuilding}
-            >
-              <Text style={styles.addBuildingText}>Add Building</Text>
+                <View style={{ marginBottom: 10 }}>
+                  <Text style={{ fontWeight: "700", marginBottom: 6 }}>Color</Text>
+                  <ColorChooser />
+                </View>
+
+                <View style={{ marginBottom: 10 }}>
+                  <TouchableOpacity style={styles.uploadBtn} onPress={() => pickImage(false)}>
+                    <Text style={{ color: "#fff" }}>{floorPlan ? "Change Floor Plan" : "Upload Floor Plan"}</Text>
+                  </TouchableOpacity>
+                  {floorPlan && <Image source={{ uri: floorPlan }} style={{ width: "100%", height: 140, borderRadius: 8, marginTop: 8 }} />}
+                </View>
+                <View style={{ marginBottom: 10 }}>
+                  <TouchableOpacity style={[styles.uploadBtn, { backgroundColor: '#2a7dff' }]} onPress={() => pickImage('photo')}>
+                    <Text style={{ color: "#fff" }}>{photo ? "Change Exterior Photo" : "Upload Exterior Photo"}</Text>
+                  </TouchableOpacity>
+                  {photo && <Image source={{ uri: photo }} style={{ width: "100%", height: 140, borderRadius: 8, marginTop: 8 }} />}
+                </View>
+              </>
+            ) : (
+              <>
+                {/* Gate-specific */}
+                <Text style={{ color: "#666", marginBottom: 6 }}>Gate position</Text>
+                <View style={{ flexDirection: "row", gap: 8 }}>
+                  <TextInput style={[styles.input, { flex: 1 }]} placeholder="X Position" keyboardType="numeric" value={newX} onChangeText={setNewX} />
+                  <TextInput style={[styles.input, { flex: 1 }]} placeholder="Y Position" keyboardType="numeric" value={newY} onChangeText={setNewY} />
+                </View>
+
+                <View style={{ marginVertical: 8 }}>
+                  <Text style={{ fontWeight: "700", marginBottom: 6 }}>Gate Icon (optional)</Text>
+                  <TouchableOpacity style={styles.uploadBtnAlt} onPress={() => pickImage(true)}>
+                    <Text style={{ color: "#fff" }}>{gateIcon ? "Change Gate Icon" : "Upload Gate Icon"}</Text>
+                  </TouchableOpacity>
+                  {gateIcon && <Image source={{ uri: gateIcon }} style={{ width: 120, height: 80, borderRadius: 8, marginTop: 8 }} />}
+                </View>
+
+                <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 6 }}>
+                  <View>
+                    <Text style={{ fontWeight: "700" }}>Primary Gate?</Text>
+                    <Text style={{ color: "#666", fontSize: 12 }}>If on, this becomes the campus entrance  {"\n"} for centering & routes.</Text>
+                  </View>
+                  <Switch value={gateIsPrimary} onValueChange={setGateIsPrimary} />
+                </View>
+              </>
+            )}
+
+            <TouchableOpacity style={styles.addBuildingBtn} onPress={saveItem}>
+              <Text style={styles.addBuildingText}>{editingId ? "Save Changes" : addKind === "gate" ? "Add Gate" : "Add Building"}</Text>
             </TouchableOpacity>
 
-            {/* CANCEL BUTTON */}
-            <TouchableOpacity
-              style={styles.cancelBtn}
-              onPress={() => setModalVisible(false)}
-            >
+            <TouchableOpacity style={styles.cancelBtn} onPress={() => setModalVisible(false)}>
               <Text style={styles.cancelText}>Cancel</Text>
             </TouchableOpacity>
           </View>
         </View>
       </Modal>
 
-      {/* Bottom Bar */}
       <View style={styles.bottomBar}>
         <TouchableOpacity style={styles.bottomItem}>
           <Ionicons name="business" size={22} color="#6a11cb" />
-          <Text style={styles.bottomLabel}>Buildings</Text>
+          <Text style={styles.bottomLabel}>Items</Text>
         </TouchableOpacity>
 
-        {/* LOGOUT FIX */}
-        <TouchableOpacity
-          style={styles.bottomItem}
-          onPress={() => navigation.replace("Login")}
-        >
+        <TouchableOpacity style={styles.bottomItem} onPress={() => navigation.replace("Login")}>
           <Ionicons name="log-out-outline" size={22} color="#444" />
           <Text style={styles.bottomLabel}>Logout</Text>
         </TouchableOpacity>
@@ -157,161 +447,32 @@ export default function AdminDashboard() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#f4f6ff",
-  },
-
-  headerCard: {
-    margin: 20,
-    padding: 20,
-    borderRadius: 15,
-    backgroundColor: "#6a11cb",
-    elevation: 5,
-  },
-
-  headerTitle: {
-    fontSize: 22,
-    color: "#fff",
-    fontWeight: "bold",
-  },
-
-  headerSubtitle: {
-    fontSize: 16,
-    color: "#eee",
-  },
-
-  sectionHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    paddingHorizontal: 20,
-    marginTop: 10,
-  },
-
-  sectionTitle: {
-    fontSize: 18,
-    fontWeight: "bold",
-    color: "#333",
-  },
-
-  addButton: {
-    backgroundColor: "#6a11cb",
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    justifyContent: "center",
-    alignItems: "center",
-  },
-
-  buildingList: {
-    padding: 20,
-  },
-
-  buildingCard: {
-    backgroundColor: "#fff",
-    padding: 15,
-    borderRadius: 12,
-    marginBottom: 15,
-    elevation: 3,
-  },
-
-  buildingName: {
-    fontSize: 18,
-    fontWeight: "bold",
-    color: "#333",
-  },
-
-  buildingDept: {
-    fontSize: 14,
-    color: "#666",
-    marginBottom: 8,
-  },
-
-  roomContainer: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-  },
-
-  roomBox: {
-    backgroundColor: "#e8e3ff",
-    paddingVertical: 5,
-    paddingHorizontal: 10,
-    borderRadius: 6,
-    margin: 3,
-    fontSize: 13,
-  },
-
-  modalContainer: {
-    flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-    backgroundColor: "rgba(0,0,0,0.4)",
-  },
-
-  modalContent: {
-    width: "90%",
-    backgroundColor: "#fff",
-    padding: 20,
-    borderRadius: 12,
-  },
-
-  modalTitle: {
-    fontSize: 18,
-    fontWeight: "bold",
-    marginBottom: 10,
-  },
-
-  input: {
-    backgroundColor: "#f1f1f1",
-    padding: 10,
-    borderRadius: 8,
-    marginBottom: 10,
-  },
-
-  addBuildingBtn: {
-    backgroundColor: "#000",
-    padding: 12,
-    borderRadius: 8,
-    alignItems: "center",
-  },
-
-  addBuildingText: {
-    color: "#fff",
-    fontSize: 16,
-  },
-
-  cancelBtn: {
-    marginTop: 10,
-    padding: 12,
-    borderRadius: 8,
-    alignItems: "center",
-    backgroundColor: "#ccc",
-  },
-
-  cancelText: {
-    fontSize: 16,
-    color: "#333",
-    fontWeight: "bold",
-  },
-
-  bottomBar: {
-    flexDirection: "row",
-    justifyContent: "space-around",
-    alignItems: "center",
-    paddingVertical: 12,
-    backgroundColor: "#fff",
-    borderTopWidth: 1,
-    borderColor: "#ddd",
-  },
-
-  bottomItem: {
-    alignItems: "center",
-  },
-
-  bottomLabel: {
-    fontSize: 12,
-    color: "#444",
-    marginTop: 3,
-  },
+  container: { flex: 1, backgroundColor: "#f4f6ff" },
+  headerCard: { margin: 20, padding: 20, borderRadius: 15, backgroundColor: "#6a11cb", elevation: 6 },
+  headerTitle: { fontSize: 22, color: "#fff", fontWeight: "bold" },
+  headerSubtitle: { fontSize: 16, color: "#eee", marginTop: 6 },
+  buttonRow: { flexDirection: "row", justifyContent: "space-around", paddingHorizontal: 20, marginTop: 10 },
+  addButton: { backgroundColor: "#1faa59", flexDirection: "row", gap: 8, alignItems: "center", paddingHorizontal: 12, paddingVertical: 10, borderRadius: 8 },
+  addButtonText: { color: "#fff", fontWeight: "700", marginLeft: 6 },
+  buildingList: { padding: 16 },
+  itemCard: { backgroundColor: "#fff", padding: 12, borderRadius: 12, marginBottom: 12, elevation: 3 },
+  itemTitle: { fontSize: 16, fontWeight: "700" },
+  itemSub: { fontSize: 13, color: "#666" },
+  iconBtn: { padding: 8, borderRadius: 8, marginLeft: 6 },
+  roomBox: { backgroundColor: "#e8e3ff", paddingVertical: 5, paddingHorizontal: 10, borderRadius: 6, margin: 3, fontSize: 13 },
+  modalContainer: { flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: "rgba(0,0,0,0.45)" },
+  modalContent: { width: "92%", backgroundColor: "#fff", padding: 16, borderRadius: 12 },
+  modalTitle: { fontSize: 18, fontWeight: "700", marginBottom: 10 },
+  input: { backgroundColor: "#f1f1f1", padding: Platform.OS === "ios" ? 12 : 8, borderRadius: 8, marginBottom: 10 },
+  typeBtn: { paddingHorizontal: 12, paddingVertical: 8, marginRight: 8, borderRadius: 8 },
+  colorSwatch: { width: 34, height: 34, borderRadius: 6, marginRight: 6 },
+  uploadBtn: { backgroundColor: "#6a11cb", padding: 10, borderRadius: 8, alignItems: "center" },
+  uploadBtnAlt: { backgroundColor: "#2a7dff", padding: 10, borderRadius: 8, alignItems: "center" },
+  addBuildingBtn: { backgroundColor: "#000", padding: 12, borderRadius: 8, alignItems: "center", marginTop: 8 },
+  addBuildingText: { color: "#fff", fontSize: 16 },
+  cancelBtn: { marginTop: 10, padding: 12, borderRadius: 8, alignItems: "center", backgroundColor: "#ccc" },
+  cancelText: { fontSize: 16, color: "#333" },
+  bottomBar: { flexDirection: "row", justifyContent: "space-around", alignItems: "center", paddingVertical: 12, backgroundColor: "#fff", borderTopWidth: 1, borderColor: "#ddd" },
+  bottomItem: { alignItems: "center" },
+  bottomLabel: { fontSize: 12, color: "#444", marginTop: 3 },
 });
