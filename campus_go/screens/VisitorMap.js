@@ -25,6 +25,11 @@ import { PinchGestureHandler, State as GHState } from "react-native-gesture-hand
 const green = "#1faa59";
 const lightGreen = "#dbffe3";
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
+// Visitor modal card is ~85% width with maxWidth 380 (see styles below),
+// compute inner content width (subtract modal padding) so carousel children
+// can use a fixed pixel width and avoid collapsing to a narrow column.
+const VISITOR_MODAL_CARD_WIDTH = Math.min(SCREEN_WIDTH * 0.85, 380);
+const VISITOR_MODAL_INNER = Math.round(VISITOR_MODAL_CARD_WIDTH - 40); // modal padding 20 on both sides
 const MAP_WIDTH = SCREEN_WIDTH * 1.8;
 const MAP_HEIGHT = 500;
 
@@ -951,38 +956,41 @@ export default function VisitorMap({ navigation }) {
         </View>
       </Modal>
       {/* FLOOR PLAN ONLY MODAL */}
-      <Modal
-        visible={floorPlanModalVisible}
-        transparent
-        animationType="fade"
-      >
+      <Modal visible={floorPlanModalVisible} transparent animationType="fade">
         <View style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
             <View style={styles.modalHeader}>
               <Ionicons name="image" size={26} color="white" />
-              <Text style={styles.modalHeaderText}>
-                {selectedBuilding?.name}
-              </Text>
+              <Text style={styles.modalHeaderText}>{selectedBuilding?.name}</Text>
             </View>
 
             <View style={{ padding: 20 }}>
-              {selectedBuilding?.floorPlan ? (
-                <Image
-                  source={{ uri: selectedBuilding.floorPlan }}
-                  style={{ width: "100%", height: 300, borderRadius: 12 }}
-                  resizeMode="contain"
-                />
+              {selectedBuilding?.photo || selectedBuilding?.floorPlan ? (
+                <ScrollView
+                  horizontal
+                  pagingEnabled
+                  showsHorizontalScrollIndicator={false}
+                  style={{ width: '100%' }}
+                  contentContainerStyle={{ alignItems: 'center' }}
+                >
+                  {selectedBuilding?.photo ? (
+                    <View style={{ width: VISITOR_MODAL_INNER }}>
+                      <Image source={{ uri: selectedBuilding.photo }} style={{ width: VISITOR_MODAL_INNER, height: 180, borderRadius: 12 }} resizeMode="cover" />
+                    </View>
+                  ) : null}
+
+                  {selectedBuilding?.floorPlan ? (
+                    <View style={{ width: VISITOR_MODAL_INNER }}>
+                      <Image source={{ uri: selectedBuilding.floorPlan }} style={{ width: VISITOR_MODAL_INNER, height: 180, borderRadius: 12 }} resizeMode="contain" />
+                    </View>
+                  ) : null}
+                </ScrollView>
               ) : (
-                <Text style={{ textAlign: "center", marginTop: 20 }}>
-                  No floor plan uploaded.
-                </Text>
+                <Text style={{ textAlign: 'center', marginTop: 20 }}>No exterior photo or floor plan uploaded.</Text>
               )}
             </View>
 
-            <TouchableOpacity
-              style={styles.closeBtn}
-              onPress={() => setFloorPlanModalVisible(false)}
-            >
+            <TouchableOpacity style={styles.closeBtn} onPress={() => setFloorPlanModalVisible(false)}>
               <Text style={styles.closeBtnText}>Close</Text>
             </TouchableOpacity>
           </View>

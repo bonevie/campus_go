@@ -6,14 +6,15 @@ import {
   ScrollView,
   TouchableOpacity,
   StyleSheet,
-  SafeAreaView,
   Modal,
   TextInput,
   Image,
   Alert,
   Switch,
   Platform,
+  Dimensions,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Ionicons } from "@expo/vector-icons";
 import { useNavigation } from "@react-navigation/native";
@@ -59,6 +60,12 @@ export default function AdminDashboard() {
     const n = Number(v);
     return isNaN(n) ? 0 : n;
   };
+
+  // compute image max height so previews never overflow the modal
+  const SCREEN_HEIGHT = Dimensions.get("window").height;
+  const SCREEN_WIDTH = Dimensions.get("window").width;
+  const MODAL_INNER_WIDTH = Math.round(SCREEN_WIDTH * 0.92);
+  const PREVIEW_MAX_HEIGHT = Math.round(SCREEN_HEIGHT * 0.36); // ~36% of screen
 
   // Load buildings/gates, ensure defaults & backward compatibility
   useEffect(() => {
@@ -354,80 +361,99 @@ export default function AdminDashboard() {
       {/* Modal */}
       <Modal visible={modalVisible} transparent animationType="slide">
         <View style={styles.modalContainer}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>{editingId ? "Edit Item" : addKind === "gate" ? "Add Gate" : "Add Building"}</Text>
+          <SafeAreaView style={styles.modalInner} edges={["top", "bottom"]}>
+            <ScrollView style={styles.modalScroll} contentContainerStyle={{ padding: 16 }}>
+              <Text style={styles.modalTitle}>{editingId ? "Edit Item" : addKind === "gate" ? "Add Gate" : "Add Building"}</Text>
 
-            <TextInput style={styles.input} placeholder="Name" value={newName} onChangeText={setNewName} />
+              <TextInput style={styles.input} placeholder="Name" value={newName} onChangeText={setNewName} />
 
-            {/* kind-specific fields */}
-            {addKind === "building" ? (
-              <>
-                <TextInput style={styles.input} placeholder="Department" value={newDept} onChangeText={setNewDept} />
-                <TextInput style={styles.input} placeholder="Rooms (comma separated)" value={newRooms} onChangeText={setNewRooms} />
-                <TextInput style={styles.input} placeholder="Steps From Main Gate" keyboardType="numeric" value={newSteps} onChangeText={setNewSteps} />
-                <TextInput style={styles.input} placeholder="X Position" keyboardType="numeric" value={newX} onChangeText={setNewX} />
-                <TextInput style={styles.input} placeholder="Y Position" keyboardType="numeric" value={newY} onChangeText={setNewY} />
+              {/* kind-specific fields */}
+              {addKind === "building" ? (
+                <>
+                  <TextInput style={styles.input} placeholder="Department" value={newDept} onChangeText={setNewDept} />
+                  <TextInput style={styles.input} placeholder="Rooms (comma separated)" value={newRooms} onChangeText={setNewRooms} />
+                  <TextInput style={styles.input} placeholder="Steps From Main Gate" keyboardType="numeric" value={newSteps} onChangeText={setNewSteps} />
+                  <TextInput style={styles.input} placeholder="X Position" keyboardType="numeric" value={newX} onChangeText={setNewX} />
+                  <TextInput style={styles.input} placeholder="Y Position" keyboardType="numeric" value={newY} onChangeText={setNewY} />
 
-                <View style={{ marginVertical: 8 }}>
-                  <Text style={{ fontWeight: "700", marginBottom: 6 }}>Type</Text>
-                  <View style={{ flexDirection: "row" }}>
-                    <TypeChooser />
+                  <View style={{ marginVertical: 8 }}>
+                    <Text style={{ fontWeight: "700", marginBottom: 6 }}>Type</Text>
+                    <View style={{ flexDirection: "row" }}>
+                      <TypeChooser />
+                    </View>
                   </View>
-                </View>
 
-                <View style={{ marginBottom: 10 }}>
-                  <Text style={{ fontWeight: "700", marginBottom: 6 }}>Color</Text>
-                  <ColorChooser />
-                </View>
-
-                <View style={{ marginBottom: 10 }}>
-                  <TouchableOpacity style={styles.uploadBtn} onPress={() => pickImage(false)}>
-                    <Text style={{ color: "#fff" }}>{floorPlan ? "Change Floor Plan" : "Upload Floor Plan"}</Text>
-                  </TouchableOpacity>
-                  {floorPlan && <Image source={{ uri: floorPlan }} style={{ width: "100%", height: 140, borderRadius: 8, marginTop: 8 }} />}
-                </View>
-                <View style={{ marginBottom: 10 }}>
-                  <TouchableOpacity style={[styles.uploadBtn, { backgroundColor: '#2a7dff' }]} onPress={() => pickImage('photo')}>
-                    <Text style={{ color: "#fff" }}>{photo ? "Change Exterior Photo" : "Upload Exterior Photo"}</Text>
-                  </TouchableOpacity>
-                  {photo && <Image source={{ uri: photo }} style={{ width: "100%", height: 140, borderRadius: 8, marginTop: 8 }} />}
-                </View>
-              </>
-            ) : (
-              <>
-                {/* Gate-specific */}
-                <Text style={{ color: "#666", marginBottom: 6 }}>Gate position</Text>
-                <View style={{ flexDirection: "row", gap: 8 }}>
-                  <TextInput style={[styles.input, { flex: 1 }]} placeholder="X Position" keyboardType="numeric" value={newX} onChangeText={setNewX} />
-                  <TextInput style={[styles.input, { flex: 1 }]} placeholder="Y Position" keyboardType="numeric" value={newY} onChangeText={setNewY} />
-                </View>
-
-                <View style={{ marginVertical: 8 }}>
-                  <Text style={{ fontWeight: "700", marginBottom: 6 }}>Gate Icon (optional)</Text>
-                  <TouchableOpacity style={styles.uploadBtnAlt} onPress={() => pickImage(true)}>
-                    <Text style={{ color: "#fff" }}>{gateIcon ? "Change Gate Icon" : "Upload Gate Icon"}</Text>
-                  </TouchableOpacity>
-                  {gateIcon && <Image source={{ uri: gateIcon }} style={{ width: 120, height: 80, borderRadius: 8, marginTop: 8 }} />}
-                </View>
-
-                <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 6 }}>
-                  <View>
-                    <Text style={{ fontWeight: "700" }}>Primary Gate?</Text>
-                    <Text style={{ color: "#666", fontSize: 12 }}>If on, this becomes the campus entrance  {"\n"} for centering & routes.</Text>
+                  <View style={{ marginBottom: 10 }}>
+                    <Text style={{ fontWeight: "700", marginBottom: 6 }}>Color</Text>
+                    <ColorChooser />
                   </View>
-                  <Switch value={gateIsPrimary} onValueChange={setGateIsPrimary} />
-                </View>
-              </>
-            )}
 
-            <TouchableOpacity style={styles.addBuildingBtn} onPress={saveItem}>
-              <Text style={styles.addBuildingText}>{editingId ? "Save Changes" : addKind === "gate" ? "Add Gate" : "Add Building"}</Text>
-            </TouchableOpacity>
+                  <View style={{ marginBottom: 10 }}>
+                    <TouchableOpacity style={styles.uploadBtn} onPress={() => pickImage(false)}>
+                      <Text style={{ color: "#fff" }}>{floorPlan ? "Change Floor Plan" : "Upload Floor Plan"}</Text>
+                    </TouchableOpacity>
+                  </View>
 
-            <TouchableOpacity style={styles.cancelBtn} onPress={() => setModalVisible(false)}>
-              <Text style={styles.cancelText}>Cancel</Text>
-            </TouchableOpacity>
-          </View>
+                  <View style={{ marginBottom: 10 }}>
+                    <TouchableOpacity style={[styles.uploadBtn, { backgroundColor: '#2a7dff' }]} onPress={() => pickImage('photo')}>
+                      <Text style={{ color: "#fff" }}>{photo ? "Change Exterior Photo" : "Upload Exterior Photo"}</Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  {/* Combined horizontal carousel for previews (prevents vertical overflow) */}
+                  {(floorPlan || photo) && (
+                    <ScrollView horizontal pagingEnabled showsHorizontalScrollIndicator={false} contentContainerStyle={{ alignItems: 'center' }} style={{ width: '100%', marginTop: 8 }}>
+                      {floorPlan && (
+                        <View style={{ width: MODAL_INNER_WIDTH - 32, paddingRight: 12 }}>
+                          <Image source={{ uri: floorPlan }} style={{ width: "100%", height: PREVIEW_MAX_HEIGHT, borderRadius: 8 }} resizeMode="contain" />
+                        </View>
+                      )}
+                      {photo && (
+                        <View style={{ width: MODAL_INNER_WIDTH - 32, paddingLeft: 12 }}>
+                          <Image source={{ uri: photo }} style={{ width: "100%", height: PREVIEW_MAX_HEIGHT, borderRadius: 8 }} resizeMode="cover" />
+                        </View>
+                      )}
+                    </ScrollView>
+                  )}
+                </>
+              ) : (
+                <>
+                  {/* Gate-specific */}
+                  <Text style={{ color: "#666", marginBottom: 6 }}>Gate position</Text>
+                  <View style={{ flexDirection: "row", gap: 8 }}>
+                    <TextInput style={[styles.input, { flex: 1 }]} placeholder="X Position" keyboardType="numeric" value={newX} onChangeText={setNewX} />
+                    <TextInput style={[styles.input, { flex: 1 }]} placeholder="Y Position" keyboardType="numeric" value={newY} onChangeText={setNewY} />
+                  </View>
+
+                  <View style={{ marginVertical: 8 }}>
+                    <Text style={{ fontWeight: "700", marginBottom: 6 }}>Gate Icon (optional)</Text>
+                    <TouchableOpacity style={styles.uploadBtnAlt} onPress={() => pickImage(true)}>
+                      <Text style={{ color: "#fff" }}>{gateIcon ? "Change Gate Icon" : "Upload Gate Icon"}</Text>
+                    </TouchableOpacity>
+                    {gateIcon && <Image source={{ uri: gateIcon }} style={{ width: 120, height: 80, borderRadius: 8, marginTop: 8 }} />}
+                  </View>
+
+                  <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 6 }}>
+                    <View>
+                      <Text style={{ fontWeight: "700" }}>Primary Gate?</Text>
+                      <Text style={{ color: "#666", fontSize: 12 }}>If on, this becomes the campus entrance  {"\n"} for centering & routes.</Text>
+                    </View>
+                    <Switch value={gateIsPrimary} onValueChange={setGateIsPrimary} />
+                  </View>
+                </>
+              )}
+            </ScrollView>
+
+            {/* Sticky footer so Save/Cancel are always reachable */}
+            <View style={styles.modalFooter}>
+              <TouchableOpacity style={[styles.footerPrimary, styles.modalFooterButton]} onPress={saveItem}>
+                <Text style={styles.addBuildingText}>{editingId ? "Save Changes" : addKind === "gate" ? "Add Gate" : "Add Building"}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.footerSecondary, styles.modalFooterButton]} onPress={() => setModalVisible(false)}>
+                <Text style={styles.cancelText}>Cancel</Text>
+              </TouchableOpacity>
+            </View>
+          </SafeAreaView>
         </View>
       </Modal>
 
@@ -460,8 +486,12 @@ const styles = StyleSheet.create({
   itemSub: { fontSize: 13, color: "#666" },
   iconBtn: { padding: 8, borderRadius: 8, marginLeft: 6 },
   roomBox: { backgroundColor: "#e8e3ff", paddingVertical: 5, paddingHorizontal: 10, borderRadius: 6, margin: 3, fontSize: 13 },
-  modalContainer: { flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: "rgba(0,0,0,0.45)" },
-  modalContent: { width: "92%", backgroundColor: "#fff", padding: 16, borderRadius: 12 },
+  modalContainer: { flex: 1, justifyContent: "flex-end", alignItems: "center", backgroundColor: "rgba(0,0,0,0.45)" },
+  modalContent: { width: "100%", backgroundColor: "transparent", padding: 0, borderRadius: 12, flex: 1 },
+  modalInner: { width: "92%", height: '85%', backgroundColor: '#fff', borderRadius: 12, overflow: 'hidden', flexDirection: 'column', paddingBottom: 92 },
+  modalScroll: { width: '100%', flex: 1 },
+  modalFooter: { position: 'absolute', left: 0, right: 0, bottom: 0, flexDirection: 'row', padding: 12, borderTopWidth: 1, borderColor: '#eee', backgroundColor: '#fff', justifyContent: 'space-between' },
+  modalFooterButton: { flex: 1, marginHorizontal: 6 },
   modalTitle: { fontSize: 18, fontWeight: "700", marginBottom: 10 },
   input: { backgroundColor: "#f1f1f1", padding: Platform.OS === "ios" ? 12 : 8, borderRadius: 8, marginBottom: 10 },
   typeBtn: { paddingHorizontal: 12, paddingVertical: 8, marginRight: 8, borderRadius: 8 },
@@ -471,6 +501,8 @@ const styles = StyleSheet.create({
   addBuildingBtn: { backgroundColor: "#000", padding: 12, borderRadius: 8, alignItems: "center", marginTop: 8 },
   addBuildingText: { color: "#fff", fontSize: 16 },
   cancelBtn: { marginTop: 10, padding: 12, borderRadius: 8, alignItems: "center", backgroundColor: "#ccc" },
+  footerPrimary: { backgroundColor: '#000', padding: 12, borderRadius: 8, alignItems: 'center' },
+  footerSecondary: { backgroundColor: '#ccc', padding: 12, borderRadius: 8, alignItems: 'center' },
   cancelText: { fontSize: 16, color: "#333" },
   bottomBar: { flexDirection: "row", justifyContent: "space-around", alignItems: "center", paddingVertical: 12, backgroundColor: "#fff", borderTopWidth: 1, borderColor: "#ddd" },
   bottomItem: { alignItems: "center" },
