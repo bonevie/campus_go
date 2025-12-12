@@ -6,7 +6,6 @@ import {
   Text,
   StyleSheet,
   TouchableOpacity,
-  TouchableWithoutFeedback,
   ScrollView,
   TextInput,
   Modal,
@@ -19,19 +18,15 @@ import {
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Ionicons } from "@expo/vector-icons";
 import { BuildingsContext } from "./BuildingsContext";
-import Svg, { Polyline, Circle, Path, G, Rect, Polygon } from "react-native-svg";
-import { PinchGestureHandler, State as GHState } from "react-native-gesture-handler";
+import Svg, { Polyline, Circle, Path, G, Rect, Polygon, Defs, LinearGradient, Stop, Ellipse, Text as SvgText } from "react-native-svg";
+import { PinchGestureHandler, TapGestureHandler, State as GHState } from "react-native-gesture-handler";
 
 const green = "#1faa59";
 const lightGreen = "#dbffe3";
-const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
-// Visitor modal card is ~85% width with maxWidth 380 (see styles below),
-// compute inner content width (subtract modal padding) so carousel children
-// can use a fixed pixel width and avoid collapsing to a narrow column.
-const VISITOR_MODAL_CARD_WIDTH = Math.min(SCREEN_WIDTH * 0.85, 380);
-const VISITOR_MODAL_INNER = Math.round(VISITOR_MODAL_CARD_WIDTH - 40); // modal padding 20 on both sides
-const MAP_WIDTH = SCREEN_WIDTH * 1.8;
-const MAP_HEIGHT = 500;
+// We'll track window size inside the component to handle orientation changes.
+// MAP_WIDTH / modal widths are computed per-render using current window size.
+// Keep a default for any top-level code that might reference them (styles are updated accordingly).
+const DEFAULT_MAP_HEIGHT = 500;
 
 const TYPE_PRESETS = {
   general: "#ffffff",
@@ -64,7 +59,25 @@ function lighten(hex, amt = 0.12) {
   }
 }
 
-export default function VisitorMap({ navigation }) {
+function VisitorMapInner({ navigation }) {
+  const [windowSize, setWindowSize] = useState(Dimensions.get("window"));
+  useEffect(() => {
+    const handler = ({ window }) => setWindowSize(window);
+    const sub = Dimensions.addEventListener ? Dimensions.addEventListener("change", handler) : null;
+    // older RN: fallback
+    if (!sub) Dimensions.removeEventListener && Dimensions.addEventListener("change", handler);
+    return () => {
+      if (sub && typeof sub.remove === "function") sub.remove();
+      else Dimensions.removeEventListener && Dimensions.removeEventListener("change", handler);
+    };
+  }, []);
+
+  const SCREEN_WIDTH = windowSize.width;
+  const SCREEN_HEIGHT = windowSize.height;
+  const VISITOR_MODAL_CARD_WIDTH = Math.min(SCREEN_WIDTH * 0.85, 380);
+  const VISITOR_MODAL_INNER = Math.round(VISITOR_MODAL_CARD_WIDTH - 40);
+  const MAP_WIDTH = SCREEN_WIDTH * 1.8;
+  const MAP_HEIGHT = DEFAULT_MAP_HEIGHT;
   const { buildings } = useContext(BuildingsContext);
   const [search, setSearch] = useState("");
   const [selectedBuilding, setSelectedBuilding] = useState(null);
@@ -73,7 +86,8 @@ export default function VisitorMap({ navigation }) {
   // Floor plan modal visible state (we use this for list -> floor plan modal)
   const [floorPlanModalVisible, setFloorPlanModalVisible] = useState(false);
 
-  const [mode, setMode] = useState("normal");
+  // Force normal mode only (remove diorama mode)
+  const mode = "normal";
   const [scrollEnabled, setScrollEnabled] = useState(true);
 
   // Add scrollViewRef to allow programmatic scrolling
@@ -92,6 +106,8 @@ export default function VisitorMap({ navigation }) {
   const pinchRef = useRef(null);
   const MIN_SCALE = 0.6;
   const MAX_SCALE = 3.0;
+  // if true, don't force clamping/snap-back after gestures (allow free panning to edges)
+  const FREE_PAN = true;
   // We'll implement an imperative pinch handler that keeps the focal point steady
   // (Google Maps style). We avoid using Animated.event for scale here because
   // we need the focalX/focalY to compute pan adjustments.
@@ -116,6 +132,8 @@ export default function VisitorMap({ navigation }) {
         x: (focalX - mapLayout.x - offsetX) / scaleValueRef.current,
         y: (focalY - mapLayout.y - offsetY) / scaleValueRef.current,
       };
+      // mark pinch active
+      pinchActiveRef.current = true;
     }
 
     // compute new scale and clamp
@@ -166,12 +184,20 @@ export default function VisitorMap({ navigation }) {
       const finalY = (typeof pan.y.__getValue === "function" ? pan.y.__getValue() : pan.y._value) + (pan.y._offset || 0);
       lastPan.current = { x: finalX, y: finalY };
       pinchCenterRef.current = null;
+      // mark that a pinch just ended so we don't immediately clamp on the next pan release
+      pinchActiveRef.current = false;
+      pinchRecentlyRef.current = true;
+      setTimeout(() => (pinchRecentlyRef.current = false), 400);
     }
   };
 
   const initialDistanceRef = useRef(null);
   const initialScaleRef = useRef(1);
   const lastPan = useRef({ x: 0, y: 0 });
+  const gestureStartRef = useRef(0);
+  // track pinch activity so we can avoid forcing clamps immediately after pinch
+  const pinchActiveRef = useRef(false);
+  const pinchRecentlyRef = useRef(false);
 
   // helpers to safely read current pan values (avoid fragile _value/_offset access)
   const getPanX = () => {
@@ -197,17 +223,55 @@ export default function VisitorMap({ navigation }) {
   const [mapLayout, setMapLayout] = useState(null);
   const pinchCenterRef = useRef(null);
 
+  // When the map layout and local buildings are ready, ensure the map is fitted
+  // so newly added items are visible (helpful after admin adds a building).
+  useEffect(() => {
+    if (!mapLayout) return;
+    if (!localBuildings || localBuildings.length === 0) return;
+    // small delay to allow layout/animations to settle
+    const id = setTimeout(() => {
+      try { fitAll(); } catch (e) { /* ignore */ }
+    }, 150);
+    return () => clearTimeout(id);
+  }, [mapLayout, localBuildings]);
+
   // for double-tap
   const lastTapRef = useRef(0);
 
   // route + animation
   const [routeStops, setRouteStops] = useState([]);
   const [routePoints, setRoutePoints] = useState([]);
+  const [directionsList, setDirectionsList] = useState([]);
   const animProgress = useRef(new Animated.Value(0)).current;
   const [walkerPos, setWalkerPos] = useState(null);
   const animRef = useRef(null);
+  const pulse = useRef(new Animated.Value(0)).current;
+  const legendOpacity = useRef(new Animated.Value(0)).current;
 
-  // load buildings/gates (backcompat)
+  // start pulsing animation when walker is present
+  useEffect(() => {
+    if (!walkerPos) return;
+    pulse.setValue(0);
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, { toValue: 1, duration: 900, useNativeDriver: true, easing: Easing.out(Easing.quad) }),
+        Animated.timing(pulse, { toValue: 0, duration: 900, useNativeDriver: true, easing: Easing.in(Easing.quad) }),
+      ])
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [walkerPos]);
+
+  // fade legend in when the map layout becomes available
+  useEffect(() => {
+    if (mapLayout) {
+      Animated.timing(legendOpacity, { toValue: 1, duration: 420, useNativeDriver: true }).start();
+    } else {
+      Animated.timing(legendOpacity, { toValue: 0, duration: 240, useNativeDriver: true }).start();
+    }
+  }, [mapLayout]);
+
+  // load buildings/gates from AsyncStorage on mount (backcompat)
   useEffect(() => {
     const load = async () => {
       try {
@@ -258,12 +322,90 @@ export default function VisitorMap({ navigation }) {
       }
     };
     load();
+    // run only on mount; context updates are handled by a separate effect below
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Keep localBuildings in sync immediately when context `buildings` changes
+  useEffect(() => {
+    if (!buildings) return;
+    // track previous buildings so we can detect newly added items
+    if (!globalThis.__prevBuildingsRef) globalThis.__prevBuildingsRef = new Set();
+    const normalized = (buildings || []).map((b) => ({
+      ...b,
+      kind: b.kind || "building",
+      x: Number(b.x) || 0,
+      y: Number(b.y) || 0,
+      stepsFromMainGate: Number(b.stepsFromMainGate) || 0,
+      rooms: Array.isArray(b.rooms) ? b.rooms : typeof b.rooms === "string" ? b.rooms.split(",").map((r) => r.trim()) : [],
+      isMainGate: b.isMainGate === true,
+      color: b.color || TYPE_PRESETS[b.type || "general"] || TYPE_PRESETS.general,
+      gateIcon: b.gateIcon || null,
+      floorPlan: b.floorPlan || null,
+    }));
+    console.log('[VisitorMap] buildings context updated, count=', normalized.length, 'sample=', normalized.slice(-3));
+    // detect newly added building (by id) and center on it so admin additions are visible
+    try {
+      const prevSet = globalThis.__prevBuildingsRef || new Set();
+      const added = normalized.find((nb) => nb && nb.id && !prevSet.has(nb.id));
+      setLocalBuildings(normalized);
+      // update prev set
+      globalThis.__prevBuildingsRef = new Set((normalized || []).map((x) => x && x.id));
+      if (added) {
+        // small delay so layout settles before centering
+        setTimeout(() => {
+          try { centerOnBuilding(added); } catch (e) { console.warn('centerOnBuilding failed', e); }
+        }, 220);
+      }
+    } catch (e) {
+      setLocalBuildings(normalized);
+    }
   }, [buildings]);
 
   const filtered = localBuildings.filter((b) => (b.name || "").toLowerCase().includes((search || "").toLowerCase()));
   const calculateWalkingTime = (steps) => Math.ceil((Number(steps) || 0) / 80);
   const getCenter = (b) => ({ x: (Number(b.x) || 0) + 35, y: (Number(b.y) || 0) + 35 });
   const findPrimaryGate = () => localBuildings.find((b) => b.kind === "gate" && b.isMainGate) || localBuildings.find((b) => b.kind === "gate");
+
+  const handleSearchSubmit = (text) => {
+    const q = (text || search || "").toLowerCase().trim();
+    if (!q) return;
+    const match = localBuildings.find((b) => (b.name || "").toLowerCase().includes(q));
+    if (match) {
+      // center on the matched item. For non-tree items, also open details.
+      centerOnBuilding(match);
+      if (match.kind !== "tree") {
+        setSelectedBuilding(match);
+        setFloorPlanModalVisible(true);
+      }
+      return;
+    }
+    Alert.alert("Not found", "No campus item matches your search");
+  };
+
+  // Long-press helpers for SVG elements (courts) — use timers because react-native-svg
+  // doesn't provide a built-in long-press handler reliably across platforms.
+  const longPressTimerRef = useRef({});
+  const longPressFiredRef = useRef(null);
+
+  const startLongPress = (b) => {
+    const id = b.id;
+    if (longPressTimerRef.current[id]) clearTimeout(longPressTimerRef.current[id]);
+    longPressTimerRef.current[id] = setTimeout(() => {
+      longPressFiredRef.current = id;
+      setSelectedBuilding(b);
+      setFloorPlanModalVisible(true);
+      delete longPressTimerRef.current[id];
+    }, 520);
+  };
+
+  const endLongPress = (b) => {
+    const id = b.id;
+    const t = longPressTimerRef.current[id];
+    if (t) { clearTimeout(t); delete longPressTimerRef.current[id]; }
+    // clear fired flag shortly after so onPress can be suppressed
+    setTimeout(() => { if (longPressFiredRef.current === id) longPressFiredRef.current = null; }, 50);
+  };
 
   // L-shape + custom
   const getLShapePath = (start, end, direction = "right") => {
@@ -511,7 +653,11 @@ export default function VisitorMap({ navigation }) {
   // PanResponder (keeps ScrollView disabled while interacting)
   const panResponder = useRef(
     PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
+      onStartShouldSetPanResponder: (evt) => {
+        // don't capture simple taps so child SVG onPress handlers run;
+        // only start responding once movement indicates a drag (handled in onMoveShouldSetPanResponder)
+        return false;
+      },
       onMoveShouldSetPanResponder: (evt, gestureState) => {
         // only start pan responder for single-finger drags; two-finger pinch is handled
         // by the PinchGestureHandler to avoid conflicts
@@ -525,6 +671,7 @@ export default function VisitorMap({ navigation }) {
         pan.setValue({ x: 0, y: 0 });
         initialDistanceRef.current = null;
         pinchCenterRef.current = null;
+        gestureStartRef.current = Date.now();
         const touches = evt.nativeEvent.touches || [];
         // ignore multi-touch here — pinch is handled by PinchGestureHandler
         if (touches.length > 1) return;
@@ -542,6 +689,41 @@ export default function VisitorMap({ navigation }) {
       },
       onPanResponderRelease: (evt, gestureState) => {
         setScrollEnabled(true);
+
+        // Detect a quick tap (small movement + short duration) and open building modal
+        try {
+          const moved = Math.abs(gestureState.dx) < 6 && Math.abs(gestureState.dy) < 6;
+          const short = Date.now() - (gestureStartRef.current || 0) < 300;
+          if (moved && short && !pinchActiveRef.current && !pinchRecentlyRef.current && mapLayout) {
+            const ne = evt && evt.nativeEvent ? evt.nativeEvent : {};
+            // derive page coords (fallbacks for different platforms)
+            const pageX = ne.pageX || (ne.touches && ne.touches[0] && ne.touches[0].pageX) || ne.locationX || 0;
+            const pageY = ne.pageY || (ne.touches && ne.touches[0] && ne.touches[0].pageY) || ne.locationY || 0;
+
+            const mapX = (pageX - (mapLayout.x || 0) - getPanX()) / (scaleValueRef.current || 1);
+            const mapY = (pageY - (mapLayout.y || 0) - getPanY()) / (scaleValueRef.current || 1);
+
+            // find nearest building within a reasonable threshold
+            let nearest = null; let best = Infinity;
+            for (let i = 0; i < (localBuildings || []).length; i++) {
+              const b = localBuildings[i];
+              if (!b) continue;
+              const bx = Number(b.x) || 0; const by = Number(b.y) || 0;
+              const d = Math.hypot(mapX - bx, mapY - by);
+              if (d < best) { best = d; nearest = b; }
+            }
+            if (nearest && best < 32) {
+              setSelectedBuilding(nearest);
+              // ensure we open the details modal (not the floorplan modal)
+              setFloorPlanModalVisible(false);
+              // short-circuit momentum handling — we've consumed this as a tap
+              lastPan.current = { x: (typeof pan.x.__getValue === 'function' ? pan.x.__getValue() : pan.x._value) + (pan.x._offset || 0), y: (typeof pan.y.__getValue === 'function' ? pan.y.__getValue() : pan.y._value) + (pan.y._offset || 0) };
+              return;
+            }
+          }
+        } catch (e) {
+          // swallow — fall through to normal release behavior
+        }
 
         // capture velocities for momentum
         const vx = gestureState.vx || 0;
@@ -568,9 +750,15 @@ export default function VisitorMap({ navigation }) {
         const decayY = Animated.decay(pan.y, { velocity: vy, deceleration: decel, useNativeDriver: true });
 
         Animated.parallel([decayX, decayY]).start(() => {
-          // after decay finished, clamp into bounds with spring
+          // after decay finished, decide whether to clamp to bounds
           const finalX = (typeof pan.x.__getValue === "function" ? pan.x.__getValue() : pan.x._value);
           const finalY = (typeof pan.y.__getValue === "function" ? pan.y.__getValue() : pan.y._value);
+
+          // if free-pan mode or a pinch just occurred, allow free positioning (don't force clamp)
+          if (FREE_PAN || pinchRecentlyRef.current) {
+            lastPan.current = { x: finalX, y: finalY };
+            return;
+          }
 
           const clampedX = Math.min(Math.max(finalX, minX), maxX);
           const clampedY = Math.min(Math.max(finalY, minY), maxY);
@@ -600,6 +788,94 @@ export default function VisitorMap({ navigation }) {
     );
   };
 
+  // Iso campus paths: approximate the same arcs/lines but mapped through worldToIso
+  const renderCampusPathsIso = () => {
+    // sample an arc and map points through worldToIso
+    const cx = MAP_WIDTH / 2;
+    const cy = MAP_HEIGHT / 2 + 20;
+
+    const sampleArcPoints = (r, steps = 48) => {
+      const pts = [];
+      const start = Math.PI; // left
+      const end = 0; // right
+      for (let i = 0; i <= steps; i++) {
+        const t = i / steps;
+        const ang = start + (end - start) * t;
+        const x = cx + Math.cos(ang) * r;
+        const y = cy + Math.sin(ang) * r;
+        const iso = worldToIso(x, y);
+        pts.push(`${iso.x},${iso.y}`);
+      }
+      return pts.join(' ');
+    };
+
+    const sampleLinePoints = (ax, ay, bx, by, steps = 6) => {
+      const pts = [];
+      for (let i = 0; i <= steps; i++) {
+        const t = i / steps;
+        const x = ax + (bx - ax) * t;
+        const y = ay + (by - ay) * t;
+        const iso = worldToIso(x, y);
+        pts.push(`${iso.x},${iso.y}`);
+      }
+      return pts.join(' ');
+    };
+
+    return (
+      <>
+        <Polyline points={sampleArcPoints(120)} fill="none" stroke="#e6f0ea" strokeWidth={22} strokeLinecap="round" strokeLinejoin="round" />
+        <Polyline points={sampleArcPoints(80)} fill="none" stroke="#eaf7ee" strokeWidth={14} strokeLinecap="round" strokeLinejoin="round" />
+        <Polyline points={sampleArcPoints(30)} fill="none" stroke="#f6fff6" strokeWidth={8} strokeLinecap="round" strokeLinejoin="round" />
+
+        <Polyline points={sampleLinePoints(cx, cy - 160, cx, cy + 160)} stroke="#f0f6f0" strokeWidth={10} strokeLinecap="round" />
+        <Polyline points={sampleLinePoints(cx - 160, cy, cx + 160, cy)} stroke="#f0f6f0" strokeWidth={10} strokeLinecap="round" />
+      </>
+    );
+  };
+
+  // Render the custom rectangular roads in isometric projection
+  const renderCustomRoadsIso = () => {
+    const specs = [];
+    // left vertical
+    specs.push({ x: MAP_WIDTH * 0.155 - MAP_WIDTH * 0.022, y: MAP_HEIGHT * 0.08, w: MAP_WIDTH * 0.044, h: MAP_HEIGHT * 0.84 });
+    // right vertical
+    specs.push({ x: MAP_WIDTH * 0.780 - MAP_WIDTH * 0.022, y: MAP_HEIGHT * 0.08, w: MAP_WIDTH * 0.044, h: MAP_HEIGHT * 0.84 });
+    // center horizontal
+    specs.push({ x: MAP_WIDTH * 0.155 - MAP_WIDTH * 0.002, y: MAP_HEIGHT * 0.52 - MAP_HEIGHT * 0.04, w: (MAP_WIDTH * 0.780) - (MAP_WIDTH * 0.155), h: MAP_HEIGHT * 0.08 });
+    // lower horizontal
+    specs.push({ x: MAP_WIDTH * 0.155 - MAP_WIDTH * 0.002, y: MAP_HEIGHT * 0.76 - MAP_HEIGHT * 0.04, w: (MAP_WIDTH * 0.780) - (MAP_WIDTH * 0.155), h: MAP_HEIGHT * 0.08 });
+    // upper-right horizontal
+    specs.push({ x: MAP_WIDTH * 0.580 - MAP_WIDTH * 0.002, y: MAP_HEIGHT * 0.18 - MAP_HEIGHT * 0.04, w: (MAP_WIDTH * 0.780) - (MAP_WIDTH * 0.580), h: MAP_HEIGHT * 0.08 });
+
+    const lines = [];
+    lines.push({ ax: MAP_WIDTH * 0.155, ay: MAP_HEIGHT * 0.08, bx: MAP_WIDTH * 0.155, by: MAP_HEIGHT * 0.92 });
+    lines.push({ ax: MAP_WIDTH * 0.780, ay: MAP_HEIGHT * 0.08, bx: MAP_WIDTH * 0.780, by: MAP_HEIGHT * 0.92 });
+    lines.push({ ax: MAP_WIDTH * 0.155, ay: MAP_HEIGHT * 0.52, bx: MAP_WIDTH * 0.780, by: MAP_HEIGHT * 0.52 });
+    lines.push({ ax: MAP_WIDTH * 0.155, ay: MAP_HEIGHT * 0.76, bx: MAP_WIDTH * 0.780, by: MAP_HEIGHT * 0.76 });
+    lines.push({ ax: MAP_WIDTH * 0.580, ay: MAP_HEIGHT * 0.18, bx: MAP_WIDTH * 0.780, by: MAP_HEIGHT * 0.18 });
+
+    return (
+      <G id="custom-roads-iso">
+        {specs.map((s, i) => {
+          const tl = worldToIso(s.x, s.y);
+          const tr = worldToIso(s.x + s.w, s.y);
+          const br = worldToIso(s.x + s.w, s.y + s.h);
+          const bl = worldToIso(s.x, s.y + s.h);
+          const pts = `${tl.x},${tl.y} ${tr.x},${tr.y} ${br.x},${br.y} ${bl.x},${bl.y}`;
+          return <Polygon key={`road-${i}`} points={pts} fill="#555" />;
+        })}
+
+        {lines.map((L, i) => {
+          const a = worldToIso(L.ax, L.ay);
+          const b = worldToIso(L.bx, L.by);
+          return <Polyline key={`rline-${i}`} points={`${a.x},${a.y} ${b.x},${b.y}`} stroke="#dcdcdc" strokeWidth={MAP_WIDTH * 0.004} strokeDasharray={`${MAP_WIDTH * 0.03} ${MAP_WIDTH * 0.022}`} strokeLinecap="round" />;
+        })}
+      </G>
+    );
+  };
+
+  // Courts are intentionally not pre-rendered — admin users add courts/trees via Admin UI
+
   // Gate rendering (prefers gateIcon image)
   const renderGate = (g) => {
     const left = Number(g.x) || 0;
@@ -628,46 +904,79 @@ export default function VisitorMap({ navigation }) {
     );
   };
 
-  // building 3D block rendering (returns view only — touch handled outside)
-  const render3DBlock = (b) => {
-    const baseColor = b.color || TYPE_PRESETS[b.type || "general"] || TYPE_PRESETS.general;
-    const front = darken(baseColor, 0.10);
-    const side = darken(baseColor, 0.18);
-    const top = lighten(baseColor, 0.10);
-    const W = 64, H = 64, roofHeight = 12, sideOffset = 12;
-    const rgb = hexToRgb(baseColor || "#ffffff");
-    const luminance =
-      (0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b) / 255;
-    const fg = luminance < 0.65 ? "#0d0e0dff" : "#222222";
+  // Prototype: isometric block renderer (SVG). This is a simple approximation
+  // that converts map world (x,y) into an isometric screen position and draws
+  // a roof + left/right faces. It's intended as a visual prototype; tweak
+  // TILE sizes to match your desired perspective.
+  const TILE_W = 36;
+  const TILE_H = 18;
+  const FLOOR_H = 6;
 
+  const worldToIso = (wx, wy) => {
+    // Origin offset so the iso map sits nicely inside the SVG viewport
+    const originX = MAP_WIDTH * 0.25;
+    const originY = MAP_HEIGHT * 0.18;
+    const sx = originX + (wx - wy) * (TILE_W * 0.5);
+    const sy = originY + (wx + wy) * (TILE_H * 0.5);
+    return { x: sx, y: sy };
+  };
+
+  const renderIsoBlock = (b) => {
+    const baseColor = b.color || TYPE_PRESETS[b.type || "general"] || TYPE_PRESETS.general;
+    const floors = Math.max(1, Number(b?.floors) || Math.ceil((b?.rooms?.length || 0) / 3));
+    const iso = worldToIso(Number(b.x) || 0, Number(b.y) || 0);
+
+    const roofCenter = { x: iso.x, y: iso.y - floors * FLOOR_H };
+    const halfW = TILE_W / 2;
+    const halfH = TILE_H / 2;
+
+    const pTop = { x: roofCenter.x, y: roofCenter.y - halfH };
+    const pRight = { x: roofCenter.x + halfW, y: roofCenter.y };
+    const pBottom = { x: roofCenter.x, y: roofCenter.y + halfH };
+    const pLeft = { x: roofCenter.x - halfW, y: roofCenter.y };
+
+    // ground points (drop by floor height)
+    const drop = floors * FLOOR_H;
+    const gLeft = { x: pLeft.x, y: pLeft.y + drop };
+    const gRight = { x: pRight.x, y: pRight.y + drop };
+    const gBottom = { x: pBottom.x, y: pBottom.y + drop };
+
+    const roofPoints = `${pTop.x},${pTop.y} ${pRight.x},${pRight.y} ${pBottom.x},${pBottom.y} ${pLeft.x},${pLeft.y}`;
+    const leftFace = `${pLeft.x},${pLeft.y} ${pBottom.x},${pBottom.y} ${gBottom.x},${gBottom.y} ${gLeft.x},${gLeft.y}`;
+    const rightFace = `${pRight.x},${pRight.y} ${pBottom.x},${pBottom.y} ${gBottom.x},${gBottom.y} ${gRight.x},${gRight.y}`;
+
+    const roofColor = lighten(baseColor, 0.04);
+    const leftColor = darken(baseColor, 0.12);
+    const rightColor = darken(baseColor, 0.06);
+
+    // compute a small wrapper style so touches align; position it centered at iso.x, iso.y
+    const wrapperStyle = { position: "absolute", left: iso.x - TILE_W, top: iso.y - TILE_H - floors * FLOOR_H, width: TILE_W * 2, height: TILE_H * 2 + floors * FLOOR_H };
 
     return (
-      <View key={`block-${b.id}`} style={[{ width: W + sideOffset, height: H + roofHeight + sideOffset, justifyContent: "flex-end", alignItems: "center" }]}>
-        <Svg width={W + sideOffset + 4} height={H + roofHeight + sideOffset + 4}>
-          <G x={2} y={2}>
-            <Polygon points={`${W},${roofHeight} ${W + sideOffset},${roofHeight + sideOffset} ${W + sideOffset},${H + roofHeight + sideOffset} ${W},${H + roofHeight}`} fill={side} />
-            <Polygon points={`0,${roofHeight} ${sideOffset},0 ${W + sideOffset},0 ${W},${roofHeight}`} fill={top} />
-            <Polygon points={`0,${roofHeight} ${W},${roofHeight} ${W},${H + roofHeight} 0,${H + roofHeight}`} fill={front} />
-            {Array.from({ length: 3 }).map((_, row) => Array.from({ length: 2 }).map((__, col) => {
-              const wx = 10 + col * 26;
-              const wy = roofHeight + 10 + row * 18;
-              return <Rect key={`${row}-${col}`} x={wx} y={wy} width={12} height={10} rx={2} fill={lighten(baseColor, 0.6)} />;
-            }))}
-            <Path d={`M ${W - 18},${6} L ${W - 18},${-6}`} stroke={darken(baseColor, 0.4)} strokeWidth={2} />
-            <Polygon points={`${W - 18},-6 ${W - 6},-2 ${W - 18},2`} fill={darken(baseColor, 0.2)} />
+      <View key={`iso-${b.id}`} style={wrapperStyle} pointerEvents="box-none">
+        <Svg width={wrapperStyle.width} height={wrapperStyle.height} viewBox={`${iso.x - TILE_W} ${iso.y - TILE_H - floors * FLOOR_H} ${wrapperStyle.width} ${wrapperStyle.height}`}>
+          <G>
+            {/* soft shadow */}
+            <Ellipse cx={iso.x} cy={iso.y + 6} rx={TILE_W * 0.8} ry={TILE_H * 0.5} fill="rgba(0,0,0,0.12)" />
+            {/* left face */}
+            <Polygon points={leftFace} fill={leftColor} stroke={darken(leftColor, 0.06)} strokeWidth={0.5} />
+            {/* right face */}
+            <Polygon points={rightFace} fill={rightColor} stroke={darken(rightColor, 0.04)} strokeWidth={0.5} />
+            {/* roof */}
+            <Polygon points={roofPoints} fill={roofColor} stroke={darken(roofColor, 0.08)} strokeWidth={0.6} />
           </G>
         </Svg>
 
-        {/* moved the name bubble ABOVE the block by using absolute top */}
-        <View style={[styles.nameBubble, { backgroundColor: "rgba(255,255,255,0.95)", position: "absolute", top: -36, marginTop: 0 }]}>
-          <Text numberOfLines={1} style={[styles.nameBubbleText, { color: fg }]}>{(b.name || "").length > 14 ? (b.name || "").slice(0, 13) + "…" : (b.name || "")}</Text>
+        {/* Name bubble positioned above roof */}
+        <View style={[styles.nameBubble, { position: "absolute", left: wrapperStyle.width / 2 - 28, top: 6, backgroundColor: "rgba(0,0,0,0.6)" }]}>
+          <Text numberOfLines={1} style={[styles.nameBubbleText, { color: "#fff", fontSize: 12 }]}>{(b.name || "").length > 14 ? (b.name || "").slice(0, 13) + "…" : (b.name || "")}</Text>
         </View>
       </View>
     );
   };
 
-  // mode toggle
-  const cycleMode = () => setMode((m) => (m === "normal" ? "diorama" : m === "diorama" ? "pixel" : "normal"));
+  // diorama mode removed; keep cycleMode as noop for compatibility
+  const cycleMode = () => {};
 
   // handle routePoints when routeStops change
   useEffect(() => {
@@ -675,6 +984,67 @@ export default function VisitorMap({ navigation }) {
     setRoutePoints(pts);
     animProgress.setValue(0);
     setWalkerPos(pts.length > 0 ? pts[0] : null);
+    // compute concise turn-by-turn directions from the sampled route points
+    try {
+      const computeDirections = (ptsArr) => {
+        if (!ptsArr || ptsArr.length < 2) return [];
+        const { segs } = buildSegmentInfo(ptsArr);
+        if (!segs || segs.length === 0) return [];
+
+        const isTurn = (prev, cur) => {
+          const v1x = prev.b.x - prev.a.x; const v1y = prev.b.y - prev.a.y;
+          const v2x = cur.b.x - cur.a.x; const v2y = cur.b.y - cur.a.y;
+          const mag1 = Math.hypot(v1x, v1y) || 1;
+          const mag2 = Math.hypot(v2x, v2y) || 1;
+          const dot = v1x * v2x + v1y * v2y;
+          const cos = Math.max(-1, Math.min(1, dot / (mag1 * mag2)));
+          const ang = Math.acos(cos) * (180 / Math.PI);
+          const cross = v1x * v2y - v1y * v2x;
+          if (ang > 35) return cross < 0 ? 'right' : 'left';
+          return 'straight';
+        };
+
+        const out = [];
+        let i = 0;
+        // head: accumulate initial straight run
+        while (i < segs.length) {
+          if (i === 0) {
+            // accumulate straight distance from start until first turn
+            let sum = segs[0].len;
+            let j = 1;
+            while (j < segs.length && isTurn(segs[j - 1], segs[j]) === 'straight') {
+              sum += segs[j].len; j++;
+            }
+            out.push(`Head straight for ${Math.round(sum)} m`);
+            i = j;
+            continue;
+          }
+
+          // determine if this segment is a turn relative to previous
+          const typ = isTurn(segs[i - 1], segs[i]);
+          if (typ === 'straight') {
+            // accumulate consecutive straight segments
+            let sum = segs[i].len; let j = i + 1;
+            while (j < segs.length && isTurn(segs[j - 1], segs[j]) === 'straight') {
+              sum += segs[j].len; j++;
+            }
+            out.push(`Continue straight for ${Math.round(sum)} m`);
+            i = j;
+          } else {
+            // a turn: emit a turn instruction, then continue
+            out.push(`Turn ${typ}`);
+            i = i + 1;
+          }
+        }
+
+        return out;
+      };
+
+      const dirs = computeDirections(pts);
+      setDirectionsList(dirs);
+    } catch (e) {
+      setDirectionsList([]);
+    }
   }, [routeStops]);
 
   const startRouteAnimation = (duration = 4000) => {
@@ -706,6 +1076,58 @@ export default function VisitorMap({ navigation }) {
     Animated.spring(pan, { toValue: { x: clampedX, y: clampedY }, stiffness: 180, damping: 20, useNativeDriver: true }).start(() => lastPan.current = { x: clampedX, y: clampedY });
   };
 
+  // Programmatic zoom helper: zoomTo(factor, focalX, focalY)
+  const zoomTo = (factor, focalX = null, focalY = null) => {
+    const oldScale = scaleValueRef.current;
+    let newScale = oldScale * factor;
+    newScale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, newScale));
+
+    // if layout not ready, just animate scale around current center
+    if (!mapLayout) {
+      Animated.timing(scale, { toValue: newScale, duration: 300, useNativeDriver: true }).start(() => { scaleValueRef.current = newScale; });
+      return;
+    }
+
+    // determine focal point in screen coords (default to center of map viewport)
+    const fx = typeof focalX === 'number' ? focalX : SCREEN_WIDTH / 2;
+    const fy = typeof focalY === 'number' ? focalY : (mapLayout ? (mapLayout.y + mapLayout.height / 2) : SCREEN_HEIGHT / 2);
+
+    // compute focal in map-local coordinates
+    const focal = {
+      x: (fx - mapLayout.x - getPanX()) / oldScale,
+      y: (fy - mapLayout.y - getPanY()) / oldScale,
+    };
+
+    const beforeX = focal.x * oldScale + lastPan.current.x;
+    const beforeY = focal.y * oldScale + lastPan.current.y;
+    const afterX = focal.x * newScale + lastPan.current.x;
+    const afterY = focal.y * newScale + lastPan.current.y;
+
+    const dxPan = beforeX - afterX;
+    const dyPan = beforeY - afterY;
+
+    const targetX = lastPan.current.x + dxPan;
+    const targetY = lastPan.current.y + dyPan;
+
+    // clamp pan so map stays within bounds
+    const minX = SCREEN_WIDTH - MAP_WIDTH * newScale; const maxX = 0;
+    const minY = Math.min(SCREEN_HEIGHT - MAP_HEIGHT * newScale, 0); const maxY = 0;
+    const clampedX = Math.min(Math.max(targetX, minX), maxX);
+    const clampedY = Math.min(Math.max(targetY, minY), maxY);
+
+    Animated.parallel([
+      Animated.timing(scale, { toValue: newScale, duration: 280, useNativeDriver: true }),
+      Animated.spring(pan, { toValue: { x: clampedX, y: clampedY }, stiffness: 120, damping: 18, useNativeDriver: true }),
+    ]).start(() => {
+      scaleValueRef.current = newScale;
+      lastPan.current = { x: clampedX, y: clampedY };
+      try { pan.flattenOffset(); } catch (e) {}
+    });
+  };
+
+  const zoomIn = (focalX = null, focalY = null) => zoomTo(1.25, focalX, focalY);
+  const zoomOut = (focalX = null, focalY = null) => zoomTo(1 / 1.25, focalX, focalY);
+
   // NOTE: gates are NOT added to routeStops by tapping. Buildings open modal where you can choose to add.
   const onTapBuilding = (b) => {
     const exists = routeStops.find((s) => s.id === b.id);
@@ -732,6 +1154,44 @@ export default function VisitorMap({ navigation }) {
     return [{ translateX: pan.x }, { translateY: pan.y }, { scale }];
   };
 
+  // Pixel mode removed — using Normal and Diorama only
+
+  // Small diorama shadow under each building to sell depth (size follows building height)
+  const BuildingShadow = ({ b }) => {
+    const floors = Math.max(1, Number(b?.floors) || Math.ceil((b?.rooms?.length || 0) / 3));
+    const W = 64;
+    const H = 28 + floors * 12;
+    const roofHeight = 10 + Math.min(10, Math.floor(floors / 2) * 3);
+    const sideOffset = Math.max(10, Math.round(H * 0.18));
+
+    const w = Math.max(56, Math.round((W + sideOffset) * 1.05));
+    const h = Math.max(12, Math.round(H * 0.14));
+    const left = Math.round((W + sideOffset) / 2 - w / 2) - 2;
+    const top = Math.round(H + roofHeight + sideOffset - h / 2 + 6);
+
+    // softer, wider shadow for more realistic look
+    return (
+      <View
+        pointerEvents="none"
+        style={{
+          position: "absolute",
+          left,
+          top,
+          width: w,
+          height: h,
+          borderRadius: Math.round(h / 2),
+          backgroundColor: "rgba(0,0,0,0.14)",
+          transform: [{ scaleX: 1.9 }],
+          shadowColor: "#000",
+          shadowOffset: { width: 0, height: 10 },
+          shadowOpacity: 0.22,
+          shadowRadius: 16,
+          elevation: 6,
+        }}
+      />
+    );
+  };
+
   // Double-tap handler overlay
   const onMapTap = () => {
     const now = Date.now();
@@ -742,7 +1202,53 @@ export default function VisitorMap({ navigation }) {
     lastTapRef.current = now;
   };
 
-  return (
+  // compute a scale bar width that visually responds to zoom (approx)
+  const computedScaleBarWidth = Math.max(24, Math.round(36 / (scaleValueRef.current || 1)));
+
+  // Sanitizer: ensure no plain string/number children are rendered inside non-Text components.
+  // This wraps raw string/number children with <Text>, but skips react-native-svg elements.
+  const SVG_TYPES = new Set([Svg, Polyline, Circle, Path, G, Rect, Polygon, Defs, LinearGradient, Stop]);
+
+  function sanitizeElement(el) {
+    if (el === null || el === undefined) return el;
+    if (typeof el === 'string' || typeof el === 'number') return React.createElement(Text, null, String(el));
+    if (!React.isValidElement(el)) return el;
+    // If this element is an SVG element (or one of its primitives), don't traverse or wrap inside it
+    if (SVG_TYPES.has(el.type)) return el;
+
+    const children = el.props && el.props.children;
+    if (!children) return el;
+
+      const mapped = React.Children.map(children, (c) => {
+        if (c === null || c === undefined) return c;
+        if (typeof c === 'string' || typeof c === 'number') return React.createElement(Text, null, String(c));
+        if (React.isValidElement(c)) {
+          if (SVG_TYPES.has(c.type)) return c;
+          return sanitizeElement(c);
+        }
+        return c;
+      });
+
+      // React.Children.map always returns an array (or null). Many components
+      // (eg TouchableWithoutFeedback) call React.Children.only and require a
+      // single React element child — passing an array (even length 1) breaks them.
+      // Normalize children: pass a single element when mapped has length 1,
+      // null when empty, or the array when there are multiple children.
+      let normalizedChildren = mapped;
+      if (Array.isArray(mapped)) {
+        if (mapped.length === 0) normalizedChildren = null;
+        else if (mapped.length === 1) normalizedChildren = mapped[0];
+        else normalizedChildren = mapped;
+      }
+
+      try {
+        return React.cloneElement(el, el.props, normalizedChildren);
+      } catch (e) {
+        return el;
+      }
+  }
+
+  const __rawVisitorMapTree = (
     <View style={styles.container}>
       {/* header */}
       <View style={styles.header}>
@@ -750,10 +1256,14 @@ export default function VisitorMap({ navigation }) {
           <TouchableOpacity onPress={() => navigation.goBack()}><Ionicons name="arrow-back" size={22} color="white" /></TouchableOpacity>
           <Text style={styles.headerTitle}>Campus Map</Text>
           <View style={{ flex: 1 }} />
-          <TouchableOpacity onPress={cycleMode} style={styles.modeBtn}><Ionicons name={mode === "normal" ? "cube" : mode === "diorama" ? "contrast" : "grid"} size={18} color="white" /><Text style={styles.modeBtnText}>{mode}</Text></TouchableOpacity>
+          <View style={styles.modeToggleContainer}>
+            <View style={[styles.modeToggleButton, styles.modeToggleActive]}>
+              <Text style={[styles.modeToggleText, { color: green, fontWeight: "700" }]}>Normal</Text>
+            </View>
+          </View>
         </View>
-        <Text style={styles.headerSubtitle}>Pinch to zoom • Tap building to open details</Text>
-        <View style={styles.searchBar}><Ionicons name="search" size={18} color="#666" /><TextInput placeholder="Search buildings, rooms, dept…" style={styles.searchInput} value={search} onChangeText={setSearch} /></View>
+        <Text style={styles.headerSubtitle}>Tap building to open details</Text>
+        <View style={styles.searchBar}><Ionicons name="search" size={18} color="#666" /><TextInput placeholder="Search buildings, rooms, dept…" style={styles.searchInput} value={search} onChangeText={setSearch} onSubmitEditing={(e) => handleSearchSubmit(e.nativeEvent.text)} returnKeyType="search" /></View>
       </View>
 
       <ScrollView
@@ -770,12 +1280,12 @@ export default function VisitorMap({ navigation }) {
 >
 
           {/* overlay to capture double-tap separately from panResponder */}
-          <TouchableWithoutFeedback onPress={onMapTap}>
   <PinchGestureHandler
     ref={pinchRef}
     onGestureEvent={onPinchEvent}
     onHandlerStateChange={onPinchStateChange}
   >
+  <TapGestureHandler numberOfTaps={2} onHandlerStateChange={(ev) => { if ((ev.nativeEvent || {}).state === GHState.END) { fitAll(); } }}>
   <Animated.View
     {...panResponder.panHandlers}
     style={{
@@ -786,26 +1296,30 @@ export default function VisitorMap({ navigation }) {
   >
 
               <Svg width="100%" height="100%" style={StyleSheet.absoluteFill} viewBox={`0 0 ${MAP_WIDTH} ${MAP_HEIGHT}`}>
-                <G opacity={1}>{renderCampusPaths()}</G>
+                <G opacity={1}>{mode === 'diorama' ? renderCampusPathsIso() : renderCampusPaths()}</G>
 
                 {/* ---------- START: INSERTED CUSTOM ROADS ---------- */}
-                <G id="custom-roads">
-                  <Rect x={MAP_WIDTH * 0.155 - MAP_WIDTH * 0.022} y={MAP_HEIGHT * 0.08} width={MAP_WIDTH * 0.044} height={MAP_HEIGHT * 0.84} rx={MAP_WIDTH * 0.02} fill={"#555"} />
-                  <Path d={`M ${MAP_WIDTH * 0.155},${MAP_HEIGHT * 0.08} L ${MAP_WIDTH * 0.155},${MAP_HEIGHT * 0.92}`} stroke={"#dcdcdc"} strokeWidth={MAP_WIDTH * 0.004} strokeDasharray={`${MAP_WIDTH * 0.03} ${MAP_WIDTH * 0.022}`} strokeLinecap="round" />
+                {mode === 'diorama' ? renderCustomRoadsIso() : (
+                  <G id="custom-roads">
+                    <Rect x={MAP_WIDTH * 0.155 - MAP_WIDTH * 0.022} y={MAP_HEIGHT * 0.08} width={MAP_WIDTH * 0.044} height={MAP_HEIGHT * 0.84} rx={MAP_WIDTH * 0.02} fill={"#555"} />
+                    <Path d={`M ${MAP_WIDTH * 0.155},${MAP_HEIGHT * 0.08} L ${MAP_WIDTH * 0.155},${MAP_HEIGHT * 0.92}`} stroke={"#dcdcdc"} strokeWidth={MAP_WIDTH * 0.004} strokeDasharray={`${MAP_WIDTH * 0.03} ${MAP_WIDTH * 0.022}`} strokeLinecap="round" />
 
-                  <Rect x={MAP_WIDTH * 0.780 - MAP_WIDTH * 0.022} y={MAP_HEIGHT * 0.08} width={MAP_WIDTH * 0.044} height={MAP_HEIGHT * 0.84} rx={MAP_WIDTH * 0.02} fill={"#555"} />
-                  <Path d={`M ${MAP_WIDTH * 0.780},${MAP_HEIGHT * 0.08} L ${MAP_WIDTH * 0.780},${MAP_HEIGHT * 0.92}`} stroke={"#dcdcdc"} strokeWidth={MAP_WIDTH * 0.004} strokeDasharray={`${MAP_WIDTH * 0.03} ${MAP_WIDTH * 0.022}`} strokeLinecap="round" />
+                    <Rect x={MAP_WIDTH * 0.780 - MAP_WIDTH * 0.022} y={MAP_HEIGHT * 0.08} width={MAP_WIDTH * 0.044} height={MAP_HEIGHT * 0.84} rx={MAP_WIDTH * 0.02} fill={"#555"} />
+                    <Path d={`M ${MAP_WIDTH * 0.780},${MAP_HEIGHT * 0.08} L ${MAP_WIDTH * 0.780},${MAP_HEIGHT * 0.92}`} stroke={"#dcdcdc"} strokeWidth={MAP_WIDTH * 0.004} strokeDasharray={`${MAP_WIDTH * 0.03} ${MAP_WIDTH * 0.022}`} strokeLinecap="round" />
 
-                  
-                  <Rect x={MAP_WIDTH * 0.155 - MAP_WIDTH * 0.002} y={MAP_HEIGHT * 0.52 - MAP_HEIGHT * 0.04} width={(MAP_WIDTH * 0.780) - (MAP_WIDTH * 0.155)} height={MAP_HEIGHT * 0.08} rx={MAP_WIDTH * 0.02} fill={"#555"} />
-                  <Path d={`M ${MAP_WIDTH * 0.155},${MAP_HEIGHT * 0.52} L ${MAP_WIDTH * 0.780},${MAP_HEIGHT * 0.52}`} stroke={"#dcdcdc"} strokeWidth={MAP_WIDTH * 0.004} strokeDasharray={`${MAP_WIDTH * 0.03} ${MAP_WIDTH * 0.022}`} strokeLinecap="round" />
+                    
+                    <Rect x={MAP_WIDTH * 0.155 - MAP_WIDTH * 0.002} y={MAP_HEIGHT * 0.52 - MAP_HEIGHT * 0.04} width={(MAP_WIDTH * 0.780) - (MAP_WIDTH * 0.155)} height={MAP_HEIGHT * 0.08} rx={MAP_WIDTH * 0.02} fill={"#555"} />
+                    <Path d={`M ${MAP_WIDTH * 0.155},${MAP_HEIGHT * 0.52} L ${MAP_WIDTH * 0.780},${MAP_HEIGHT * 0.52}`} stroke={"#dcdcdc"} strokeWidth={MAP_WIDTH * 0.004} strokeDasharray={`${MAP_WIDTH * 0.03} ${MAP_WIDTH * 0.022}`} strokeLinecap="round" />
 
-                  <Rect x={MAP_WIDTH * 0.155 - MAP_WIDTH * 0.002} y={MAP_HEIGHT * 0.76 - MAP_HEIGHT * 0.04} width={(MAP_WIDTH * 0.780) - (MAP_WIDTH * 0.155)} height={MAP_HEIGHT * 0.08} rx={MAP_WIDTH * 0.02} fill={"#555"} />
-                  <Path d={`M ${MAP_WIDTH * 0.155},${MAP_HEIGHT * 0.76} L ${MAP_WIDTH * 0.780},${MAP_HEIGHT * 0.76}`} stroke={"#dcdcdc"} strokeWidth={MAP_WIDTH * 0.004} strokeDasharray={`${MAP_WIDTH * 0.03} ${MAP_WIDTH * 0.022}`} strokeLinecap="round" />
+                    <Rect x={MAP_WIDTH * 0.155 - MAP_WIDTH * 0.002} y={MAP_HEIGHT * 0.76 - MAP_HEIGHT * 0.04} width={(MAP_WIDTH * 0.780) - (MAP_WIDTH * 0.155)} height={MAP_HEIGHT * 0.08} rx={MAP_WIDTH * 0.02} fill={"#555"} />
+                    <Path d={`M ${MAP_WIDTH * 0.155},${MAP_HEIGHT * 0.76} L ${MAP_WIDTH * 0.780},${MAP_HEIGHT * 0.76}`} stroke={"#dcdcdc"} strokeWidth={MAP_WIDTH * 0.004} strokeDasharray={`${MAP_WIDTH * 0.03} ${MAP_WIDTH * 0.022}`} strokeLinecap="round" />
 
-                  <Rect x={MAP_WIDTH * 0.580 - MAP_WIDTH * 0.002} y={MAP_HEIGHT * 0.18 - MAP_HEIGHT * 0.04} width={(MAP_WIDTH * 0.780) - (MAP_WIDTH * 0.580)} height={MAP_HEIGHT * 0.08} rx={MAP_WIDTH * 0.02} fill={"#555"} />
-                  <Path d={`M ${MAP_WIDTH * 0.580},${MAP_HEIGHT * 0.18} L ${MAP_WIDTH * 0.780},${MAP_HEIGHT * 0.18}`} stroke={"#dcdcdc"} strokeWidth={MAP_WIDTH * 0.004} strokeDasharray={`${MAP_WIDTH * 0.03} ${MAP_WIDTH * 0.022}`} strokeLinecap="round" />
-                </G>
+                    <Rect x={MAP_WIDTH * 0.580 - MAP_WIDTH * 0.002} y={MAP_HEIGHT * 0.18 - MAP_HEIGHT * 0.04} width={(MAP_WIDTH * 0.780) - (MAP_WIDTH * 0.580)} height={MAP_HEIGHT * 0.08} rx={MAP_WIDTH * 0.02} fill={"#555"} />
+                    <Path d={`M ${MAP_WIDTH * 0.580},${MAP_HEIGHT * 0.18} L ${MAP_WIDTH * 0.780},${MAP_HEIGHT * 0.18}`} stroke={"#dcdcdc"} strokeWidth={MAP_WIDTH * 0.004} strokeDasharray={`${MAP_WIDTH * 0.03} ${MAP_WIDTH * 0.022}`} strokeLinecap="round" />
+                  </G>
+                )}
+
+                {/* Courts are removed from the default map — admin will add them via the admin UI */}
                 {/* ---------- END: INSERTED CUSTOM ROADS ---------- */}
 
                 {routePoints.length >= 2 && (
@@ -815,40 +1329,249 @@ export default function VisitorMap({ navigation }) {
                     {routePoints.map((p, i) => <Circle key={i} cx={p.x} cy={p.y} r={6} fill="#fff" stroke={green} strokeWidth={3} />)}
                   </>
                 )}
+                {/* ---------- BUILDINGS / COURTS / TREES (render in normal mode as simple markers) ---------- */}
+                {(() => {
+                  const list = filtered.filter((it) => it.kind !== "gate").slice();
+                  // keep stable ordering
+                  list.sort((a, b) => (Number(a.x || 0) + Number(a.y || 0)) - (Number(b.x || 0) + Number(b.y || 0)));
+
+                  // If diorama were enabled we'd render iso blocks; in normal mode render simple markers
+                  if (mode === 'diorama') {
+                    return list.map((b) => {
+                      const baseColor = b.color || TYPE_PRESETS[b.type || "general"] || TYPE_PRESETS.general;
+                      const floors = Math.max(1, Number(b?.floors) || Math.ceil((b?.rooms?.length || 0) / 3));
+                      const iso = worldToIso(Number(b.x) || 0, Number(b.y) || 0);
+
+                      const roofCenter = { x: iso.x, y: iso.y - floors * FLOOR_H };
+                      const halfW = TILE_W / 2;
+                      const halfH = TILE_H / 2;
+
+                      const pTop = { x: roofCenter.x, y: roofCenter.y - halfH };
+                      const pRight = { x: roofCenter.x + halfW, y: roofCenter.y };
+                      const pBottom = { x: roofCenter.x, y: roofCenter.y + halfH };
+                      const pLeft = { x: roofCenter.x - halfW, y: roofCenter.y };
+
+                      const drop = floors * FLOOR_H;
+                      const gLeft = { x: pLeft.x, y: pLeft.y + drop };
+                      const gRight = { x: pRight.x, y: pRight.y + drop };
+                      const gBottom = { x: pBottom.x, y: pBottom.y + drop };
+
+                      const roofPoints = `${pTop.x},${pTop.y} ${pRight.x},${pRight.y} ${pBottom.x},${pBottom.y} ${pLeft.x},${pLeft.y}`;
+                      const leftFace = `${pLeft.x},${pLeft.y} ${pBottom.x},${pBottom.y} ${gBottom.x},${gBottom.y} ${gLeft.x},${gLeft.y}`;
+                      const rightFace = `${pRight.x},${pRight.y} ${pBottom.x},${pBottom.y} ${gBottom.x},${gBottom.y} ${gRight.x},${gRight.y}`;
+
+                      const roofColor = lighten(baseColor, 0.04);
+                      const leftColor = darken(baseColor, 0.12);
+                      const rightColor = darken(baseColor, 0.06);
+
+                      return (
+                        <G key={`iso-${b.id}`} onPress={() => setSelectedBuilding(b)}>
+                          <Ellipse cx={iso.x} cy={iso.y + 6} rx={TILE_W * 0.8} ry={TILE_H * 0.5} fill="rgba(0,0,0,0.12)" />
+                          <Polygon points={leftFace} fill={leftColor} stroke={darken(leftColor, 0.06)} strokeWidth={0.5} />
+                          <Polygon points={rightFace} fill={rightColor} stroke={darken(rightColor, 0.04)} strokeWidth={0.5} />
+                          <Polygon points={roofPoints} fill={roofColor} stroke={darken(roofColor, 0.08)} strokeWidth={0.6} />
+                        </G>
+                      );
+                    });
+                  }
+
+                  // Normal mode: render simple markers at world coords so admin-added items appear
+                  return list.map((b) => {
+                    const bx = Number(b.x) || 0;
+                    const by = Number(b.y) || 0;
+                    const baseColor = b.color || TYPE_PRESETS[b.type || "general"] || TYPE_PRESETS.general;
+                    const strokeColor = darken(baseColor, 0.12);
+
+                    if (b.kind === 'tree') {
+                      // low-poly stylized tree: three stacked triangular foliage layers + trunk
+                      const canopyTop = lighten(baseColor, 0.06);
+                      const canopyMid = baseColor;
+                      const canopyBot = darken(baseColor, 0.06);
+                      const strokeTop = darken(canopyTop, 0.12);
+                      const strokeMid = darken(canopyMid, 0.12);
+                      const strokeBot = darken(canopyBot, 0.12);
+                      const trunkColor = darken(baseColor, 0.45);
+
+                      const topPts = `${bx},${by - 28} ${bx - 12},${by - 14} ${bx + 12},${by - 14}`;
+                      const midPts = `${bx},${by - 16} ${bx - 16},${by + 2} ${bx + 16},${by + 2}`;
+                      const botPts = `${bx},${by - 6} ${bx - 20},${by + 16} ${bx + 20},${by + 16}`;
+
+                      return (
+                        <G key={`tree-${b.id}`} onPress={() => setSelectedBuilding(b)}>
+                          {/* soft ground shadow */}
+                          <Ellipse cx={bx} cy={by + 22} rx={18} ry={6} fill="rgba(0,0,0,0.12)" />
+
+                          {/* bottom (largest) foliage layer */}
+                          <Polygon points={botPts} fill={canopyBot} stroke={strokeBot} strokeWidth={0.8} />
+                          {/* mid foliage layer */}
+                          <Polygon points={midPts} fill={canopyMid} stroke={strokeMid} strokeWidth={0.8} />
+                          {/* top foliage layer */}
+                          <Polygon points={topPts} fill={canopyTop} stroke={strokeTop} strokeWidth={0.8} />
+
+                          {/* simple low-poly facet detail: a small inner triangle on mid layer */}
+                          <Polygon points={`${bx},${by - 12} ${bx - 8},${by + 2} ${bx + 8},${by + 2}`} fill={darken(canopyMid, 0.08)} opacity={0.85} />
+
+                          {/* trunk */}
+                          <Rect x={bx - 4} y={by + 16} width={8} height={12} rx={1} fill={trunkColor} />
+                        </G>
+                      );
+                    }
+
+                    if (b.kind === 'court') {
+                      // stylized court: rounded rectangle with center line and small hoops/markers
+                      const courtColor = b.color || '#d9b382';
+                      const w = 36;
+                      const h = 22;
+                      const left = bx - w / 2;
+                      const top = by - h / 2;
+                      const centerX = bx;
+                      const centerY = by;
+                      return (
+                        <G key={`court-${b.id}`} onPressIn={() => startLongPress(b)} onPressOut={() => endLongPress(b)} onPress={() => { setSelectedBuilding(b); }}>
+                          <Rect x={left} y={top} width={w} height={h} rx={4} fill={courtColor} stroke={darken(courtColor, 0.08)} strokeWidth={1} />
+                          {/* center line */}
+                          <Path d={`M ${centerX},${top + 4} L ${centerX},${top + h - 4}`} stroke={darken(courtColor, 0.5)} strokeWidth={1.5} strokeLinecap="round" />
+                          {/* left hoop marker */}
+                          <Path d={`M ${left + 6},${centerY - 4} L ${left + 6},${centerY + 4}`} stroke={darken(courtColor, 0.5)} strokeWidth={1.2} />
+                          {/* right hoop marker */}
+                          <Path d={`M ${left + w - 6},${centerY - 4} L ${left + w - 6},${centerY + 4}`} stroke={darken(courtColor, 0.5)} strokeWidth={1.2} />
+                        </G>
+                      );
+                    }
+
+                    // default building marker — render a compact isometric block (diorama style)
+                    {
+                      const floors = Math.max(1, Number(b?.floors) || Math.ceil((b?.rooms?.length || 0) / 3));
+                      // Use plain map coordinates (bx,by) so buildings render where admins place them
+                      const center = { x: bx, y: by };
+                      const roofCenter = { x: center.x, y: center.y - floors * FLOOR_H };
+                      const halfW = TILE_W / 2;
+                      const halfH = TILE_H / 2;
+
+                      const pTop = { x: roofCenter.x, y: roofCenter.y - halfH };
+                      const pRight = { x: roofCenter.x + halfW, y: roofCenter.y };
+                      const pBottom = { x: roofCenter.x, y: roofCenter.y + halfH };
+                      const pLeft = { x: roofCenter.x - halfW, y: roofCenter.y };
+
+                      const drop = floors * FLOOR_H;
+                      const gLeft = { x: pLeft.x, y: pLeft.y + drop };
+                      const gRight = { x: pRight.x, y: pRight.y + drop };
+                      const gBottom = { x: pBottom.x, y: pBottom.y + drop };
+
+                      const roofPoints = `${pTop.x},${pTop.y} ${pRight.x},${pRight.y} ${pBottom.x},${pBottom.y} ${pLeft.x},${pLeft.y}`;
+                      const leftFace = `${pLeft.x},${pLeft.y} ${pBottom.x},${pBottom.y} ${gBottom.x},${gBottom.y} ${gLeft.x},${gLeft.y}`;
+                      const rightFace = `${pRight.x},${pRight.y} ${pBottom.x},${pBottom.y} ${gBottom.x},${gBottom.y} ${gRight.x},${gRight.y}`;
+
+                      const roofColor = lighten(baseColor, 0.04);
+                      const leftColor = darken(baseColor, 0.12);
+                      const rightColor = darken(baseColor, 0.06);
+
+                      // small window grid for front face
+                      const name = (b.name || "").length > 12 ? (b.name || "").slice(0, 11) + "…" : (b.name || "");
+                      const winCols = 2;
+                      const winRows = Math.min(3, Math.max(1, floors));
+                      const winW = 4;
+                      const winH = 6;
+                      const winXStart = roofCenter.x + halfW * 0.2;
+                      const winYStart = roofCenter.y - halfH * 0.1;
+
+                      const bubbleW = Math.max(48, Math.min(120, name.length * 8 + 24));
+                      const bubbleH = 24;
+                      const bubbleX = center.x - bubbleW / 2;
+                      const bubbleY = roofCenter.y - halfH - bubbleH - 8;
+
+                      return (
+                        <G key={`pt-${b.id}`} onPress={() => setSelectedBuilding(b)}>
+                          {/* soft shadow */}
+                          <Ellipse cx={center.x} cy={center.y + 6} rx={TILE_W * 0.9} ry={TILE_H * 0.5} fill="rgba(0,0,0,0.12)" />
+
+                          {/* building faces */}
+                          <Polygon points={leftFace} fill={leftColor} stroke={darken(leftColor, 0.06)} strokeWidth={0.5} />
+                          <Polygon points={rightFace} fill={rightColor} stroke={darken(rightColor, 0.04)} strokeWidth={0.5} />
+                          <Polygon points={roofPoints} fill={roofColor} stroke={darken(roofColor, 0.08)} strokeWidth={0.6} />
+
+                          {/* small rooftop flag */}
+                          <Path d={`M ${roofCenter.x - 6},${roofCenter.y - halfH + 2} L ${roofCenter.x - 6},${roofCenter.y - halfH - 8}`} stroke={darken(roofColor,0.4)} strokeWidth={1.2} />
+                          <Path d={`M ${roofCenter.x - 6},${roofCenter.y - halfH - 8} L ${roofCenter.x - 0.5},${roofCenter.y - halfH - 5} L ${roofCenter.x - 6},${roofCenter.y - halfH - 2} Z`} fill={darken(roofColor,0.02)} />
+
+                          {/* windows on front/right face */}
+                          {Array.from({ length: winRows }).map((_, r) => (
+                            Array.from({ length: winCols }).map((__, c) => {
+                              const wx = winXStart + c * (winW + 4);
+                              const wy = winYStart + r * (winH + 4);
+                              return <Rect key={`w-${b.id}-${r}-${c}`} x={wx} y={wy} width={winW} height={winH} rx={1} fill="#fff" opacity={0.95} stroke={darken("#fff", 0.14)} strokeWidth={0.6} />;
+                            })
+                          ))}
+
+                          {/* name bubble */}
+                          <G>
+                            <Rect x={bubbleX} y={bubbleY} width={bubbleW} height={bubbleH} rx={bubbleH / 2} fill="#ffffff" stroke="rgba(0,0,0,0.06)" />
+                            <Polygon points={`${center.x - 6},${bubbleY + bubbleH} ${center.x + 6},${bubbleY + bubbleH} ${center.x},${bubbleY + bubbleH + 8}`} fill="#ffffff" />
+                            <SvgText x={bubbleX + bubbleW / 2} y={bubbleY + bubbleH / 2 + 4} fontSize={12} fontWeight="700" fill="#222" textAnchor="middle">{name}</SvgText>
+                          </G>
+                        </G>
+                      );
+                    }
+                  });
+                })()}
               </Svg>
 
-              <Text style={styles.mapHint}>Tap a building to add stops • Gates open details only</Text>
+              {/* Invisible touch overlays for buildings/courts (make them as tappable as gates) */}
+              {filtered.filter((it) => it.kind !== 'gate').map((b) => {
+                const bx = Number(b.x) || 0;
+                const by = Number(b.y) || 0;
+                const size = b.kind === 'tree' ? 36 : 56;
+                return (
+                  <TouchableOpacity
+                    key={`touch-${b.id}`}
+                    activeOpacity={0.9}
+                    onPress={() => { setSelectedBuilding(b); setFloorPlanModalVisible(false); }}
+                    onLongPress={() => { startLongPress(b); }}
+                    onPressOut={() => { endLongPress(b); }}
+                    style={{ position: 'absolute', left: bx - size / 2, top: by - size / 2, width: size, height: size, backgroundColor: 'transparent', alignItems: 'center', justifyContent: 'center' }}
+                  />
+                );
+              })}
+
+              <Text style={styles.mapHint}>Tap a building or court to open details • Use modal to add to route</Text>
 
               {/* gates first */}
               {filtered.filter((it) => it.kind === "gate").map((g) => renderGate(g))}
 
-              {/* buildings - use wrapper (not nested Touchable) */}
-              {filtered.filter((it) => it.kind !== "gate").map((b) => (
-                <View key={`wrap-${b.id}`} style={[styles.buildingWrapper, { left: Number(b.x) || 0, top: Number(b.y) || 0 }]}>
-                  <TouchableOpacity activeOpacity={0.9} onPress={() => { setSelectedBuilding(b); }} style={{ alignItems: "center" }}>
-                    {render3DBlock(b)}
-                  </TouchableOpacity>
-                </View>
-              ))}
-
               {walkerPos && (
-                <View pointerEvents="none" style={[{ position: "absolute", left: walkerPos.x - 8, top: walkerPos.y - 8, width: 16, height: 16, borderRadius: 8, backgroundColor: "#074", elevation: 6 }, mode === "diorama" ? { shadowColor: "#000", shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.35, shadowRadius: 6 } : {}]} />
+                <View pointerEvents="none" style={{ position: "absolute", left: walkerPos.x - 24, top: walkerPos.y - 24, width: 48, height: 48, alignItems: "center", justifyContent: "center" }}>
+                  <Animated.View
+                    style={[
+                      styles.pulseRing,
+                      {
+                        transform: [
+                          {
+                            scale: Animated.multiply(
+                              pulse.interpolate({ inputRange: [0, 1], outputRange: [0.6, 2.0] }),
+                              Animated.divide(1, scale)
+                            ),
+                          },
+                        ],
+                        opacity: pulse.interpolate({ inputRange: [0, 1], outputRange: [0.55, 0] }),
+                      },
+                    ]}
+                  />
+                  <View style={[styles.pulseDot, mode === "diorama" ? styles.pulseDotDiorama : null]} />
+                </View>
               )}
 
-              {mode === "pixel" && (
-                <Svg width={MAP_WIDTH} height={MAP_HEIGHT} style={StyleSheet.absoluteFill}>
-                  {Array.from({ length: Math.ceil(MAP_HEIGHT / 12) }).map((_, r) =>
-                    Array.from({ length: Math.ceil(MAP_WIDTH / 12) }).map((__, c) => (
-                      <Rect key={`${r}-${c}`} x={c * 12} y={r * 12} width={12} height={12} fill="rgba(0,0,0,0.04)" />
-                    ))
-                  )}
-                </Svg>
-              )}
+                  {mode === "diorama" && <View pointerEvents="none" style={styles.vignette} />}
+                  </Animated.View>
+        </TapGestureHandler>
+        </PinchGestureHandler>
 
-              {mode === "diorama" && <View pointerEvents="none" style={styles.vignette} />}
-            </Animated.View>
-  </PinchGestureHandler>
-          </TouchableWithoutFeedback>
+          <Animated.View pointerEvents="box-none" style={[styles.legendContainer, { opacity: legendOpacity }]}>
+            <View style={styles.legendItem}><View style={[styles.legendSwatch, { backgroundColor: "#fff" }]} /><Text style={styles.legendLabel}>Building</Text></View>
+            <View style={styles.legendItem}><View style={[styles.legendSwatch, { backgroundColor: "#2a7dff", borderRadius: 8 }]} /><Text style={styles.legendLabel}>Gate</Text></View>
+            <View style={styles.legendItem}><View style={[styles.legendSwatch, { backgroundColor: "#1faa59", width: 12, height: 12, borderRadius: 6 }]} /><Text style={styles.legendLabel}>You</Text></View>
+            <View style={[styles.legendItem, { marginTop: 6 }]}> <View style={[styles.scaleBar, { width: computedScaleBarWidth }]} /><Text style={[styles.legendLabel, { marginLeft: 8 }]}>{"100 m"}</Text></View>
+          </Animated.View>
+
         </View>
 
         {/* route controls */}
@@ -869,12 +1592,16 @@ export default function VisitorMap({ navigation }) {
           <View style={{ marginTop: 18 }}>
             <Text style={{ fontWeight: "700", fontSize: 16 }}>Directions</Text>
             {routeStops.length === 0 && <Text style={{ color: "#666", marginTop: 6 }}>Add stops to see directions</Text>}
-            {routeStops.map((s, idx) => <Text key={s.id} style={{ marginTop: 6 }}>{`${idx + 1}. ${idx === 0 ? "Start at " : "Arrive at "} ${s.name}`}</Text>)}
+            {directionsList.length > 0 ? (
+              directionsList.map((d, i) => <Text key={`dir-${i}`} style={{ marginTop: 6 }}>{`${i + 1}. ${d}`}</Text>)
+            ) : (
+              routeStops.map((s, idx) => <Text key={s.id} style={{ marginTop: 6 }}>{`${idx + 1}. ${idx === 0 ? "Start at " : "Arrive at " } ${s.name}`}</Text>)
+            )}
           </View>
         </View>
 
         <Text style={styles.sectionTitle}>All Campus Items</Text>
-        {filtered.map((it) => (
+        {filtered.filter((it) => it.kind !== 'tree').map((it) => (
           <TouchableOpacity
             key={it.id}
             style={styles.itemCard}
@@ -915,7 +1642,7 @@ export default function VisitorMap({ navigation }) {
         <View style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
             <View style={styles.modalHeader}>
-              <Ionicons name={selectedBuilding?.kind === "gate" ? "md-enter" : "business"} size={26} color="white" />
+              <Ionicons name={selectedBuilding?.kind === "gate" ? "log-in" : "business"} size={26} color="white" />
               <Text style={styles.modalHeaderText}>{selectedBuilding?.name}</Text>
             </View>
 
@@ -999,6 +1726,36 @@ export default function VisitorMap({ navigation }) {
 
     </View>
   );
+
+  return sanitizeElement(__rawVisitorMapTree);
+}
+
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error, info) {
+    console.warn('VisitorMap ErrorBoundary caught:', error, info);
+  }
+
+  render() {
+    if (this.state.hasError) return null;
+    return this.props.children;
+  }
+}
+
+export default function VisitorMap(props) {
+  return (
+    <ErrorBoundary>
+      <VisitorMapInner {...props} />
+    </ErrorBoundary>
+  );
 }
 
 // styles
@@ -1015,7 +1772,7 @@ const styles = StyleSheet.create({
   searchInput: { marginLeft: 8, flex: 1 },
 
   /* Map card */
-  mapCard: { marginTop: 20, marginHorizontal: 20, height: SCREEN_HEIGHT * 0.9, backgroundColor: lightGreen, borderRadius: 20, padding: 10, overflow: "hidden" },
+  mapCard: { marginTop: 20, marginHorizontal: 20, height: Dimensions.get('window').height * 0.9, backgroundColor: lightGreen, borderRadius: 20, padding: 10, overflow: "hidden" },
   mapHint: { position: "absolute", bottom: 10, left: 10, fontSize: 12 },
 
   /* Building & gate wrappers */
@@ -1062,7 +1819,27 @@ const styles = StyleSheet.create({
   modeBtn: { flexDirection: "row", alignItems: "center", gap: 8, padding: 6 },
   modeBtnText: { color: "white", textTransform: "capitalize", fontSize: 12 },
 
-  vignette: { position: "absolute", left: 0, top: 0, width: MAP_WIDTH, height: MAP_HEIGHT, backgroundColor: "transparent", shadowColor: "#000", shadowOffset: { width: 0, height: 0 }, shadowOpacity: 0.2, shadowRadius: 40 },
+  /* explicit mode toggle */
+  modeToggleContainer: { flexDirection: "row", alignItems: "center", backgroundColor: "rgba(255,255,255,0.06)", padding: 4, borderRadius: 12 },
+  modeToggleButton: { paddingHorizontal: 8, paddingVertical: 6, borderRadius: 8 },
+  modeToggleActive: { backgroundColor: "rgba(255,255,255,0.12)" },
+  modeToggleText: { color: "white", fontSize: 12, textTransform: "capitalize" },
+
+  
+
+  vignette: { position: "absolute", left: 0, top: 0, right: 0, bottom: 0, backgroundColor: "transparent", shadowColor: "#000", shadowOffset: { width: 0, height: 0 }, shadowOpacity: 0.2, shadowRadius: 40 },
+
+  /* pulsing walker */
+  pulseRing: { position: "absolute", width: 48, height: 48, borderRadius: 24, backgroundColor: "rgba(31,150,70,0.12)", borderWidth: 1, borderColor: "rgba(31,150,70,0.18)" },
+  pulseDot: { width: 14, height: 14, borderRadius: 8, backgroundColor: "#1faa59", elevation: 8 },
+  pulseDotDiorama: { shadowColor: "#000", shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.35, shadowRadius: 6 },
+
+  /* legend */
+  legendContainer: { position: "absolute", right: 12, top: 12, backgroundColor: "rgba(255,255,255,0.94)", padding: 8, borderRadius: 10, elevation: 8, shadowColor: "#000", shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.12, shadowRadius: 8 },
+  legendItem: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 4 },
+  legendSwatch: { width: 16, height: 12, borderRadius: 3, borderWidth: 0.5, borderColor: "rgba(0,0,0,0.06)" },
+  legendLabel: { fontSize: 12, color: "#333" },
+  scaleBar: { width: 36, height: 6, backgroundColor: "#333", borderRadius: 4, opacity: 0.9 },
 
   roomChip: { backgroundColor: "#f1f1f1", paddingVertical: 6, paddingHorizontal: 10, borderRadius: 8, marginRight: 6, marginBottom: 6 },
 });

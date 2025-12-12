@@ -16,9 +16,30 @@ import { BuildingsProvider } from "./screens/BuildingsContext";
 
 const Stack = createNativeStackNavigator();
 
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error, info) {
+    console.warn('App ErrorBoundary caught:', error, info);
+  }
+
+  render() {
+    if (this.state.hasError) return null;
+    return this.props.children;
+  }
+}
+
 export default function App() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
+      <ErrorBoundary>
       <BuildingsProvider>
         <NavigationContainer>
         <Stack.Navigator screenOptions={{ headerShown: false }}>
@@ -33,6 +54,7 @@ export default function App() {
         </Stack.Navigator>
         </NavigationContainer>
       </BuildingsProvider>
+      </ErrorBoundary>
     </GestureHandlerRootView>
   );
 }

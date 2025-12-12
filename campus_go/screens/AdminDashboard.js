@@ -37,7 +37,7 @@ export default function AdminDashboard() {
   const [editingId, setEditingId] = useState(null);
 
   // New: choose whether adding a "building" or "gate"
-  const [addKind, setAddKind] = useState("building"); // 'building' | 'gate'
+  const [addKind, setAddKind] = useState("building"); // 'building' | 'gate' | 'court' | 'tree'
 
   // building fields
   const [newName, setNewName] = useState("");
@@ -54,6 +54,15 @@ export default function AdminDashboard() {
   // gate fields (separate)
   const [gateIcon, setGateIcon] = useState(null);
   const [gateIsPrimary, setGateIsPrimary] = useState(false);
+
+  // court fields
+  const [newCourtType, setNewCourtType] = useState("basketball"); // 'basketball' | 'volleyball'
+
+  // tree fields
+  const [newTreeSpecies, setNewTreeSpecies] = useState("");
+  const [newTreeColor, setNewTreeColor] = useState("#1faa59");
+  // generic other item color
+  const [newOtherMeta, setNewOtherMeta] = useState("");
 
   // utility
   const safeNum = (v) => {
@@ -137,6 +146,9 @@ export default function AdminDashboard() {
     setNewColor("#1faa59");
     setGateIcon(null);
     setGateIsPrimary(false);
+    setNewCourtType("basketball");
+    setNewTreeSpecies("");
+    setNewTreeColor("#1faa59");
     setModalVisible(true);
   };
 
@@ -179,7 +191,7 @@ export default function AdminDashboard() {
     }
   };
 
-  const saveItem = () => {
+  const saveItem = async () => {
     if (!newName.trim()) {
       Alert.alert("Validation", "Please provide a name.");
       return;
@@ -212,29 +224,80 @@ export default function AdminDashboard() {
       if (editingId === null) updated.push(obj);
       else updated = updated.map((it) => (it.id === editingId ? obj : it));
     } else {
-      // building
-      const obj = {
-        id: newId,
-        kind: "building",
-        name: newName.trim(),
-        department: newDept.trim(),
-        rooms: newRooms ? newRooms.split(",").map((r) => r.trim()) : [],
-        stepsFromMainGate: safeNum(newSteps),
-        x: safeNum(newX),
-        y: safeNum(newY),
-        floorPlan: floorPlan || null,
-        photo: photo || null,
-        type: newType || "general",
-        color: newColor || "#1faa59",
-        isMainGate: false,
-      };
-
-      if (editingId === null) updated.push(obj);
-      else updated = updated.map((it) => (it.id === editingId ? obj : it));
+      // building | court | tree
+      if (addKind === 'building') {
+        // default to a visible-ish location if coords are not provided
+        const defaultX = safeNum(newX) || 220;
+        const defaultY = safeNum(newY) || 80;
+        const obj = {
+          id: newId,
+          kind: "building",
+          name: newName.trim(),
+          department: newDept.trim(),
+          rooms: newRooms ? newRooms.split(",").map((r) => r.trim()) : [],
+          stepsFromMainGate: safeNum(newSteps),
+          x: defaultX,
+          y: defaultY,
+          floorPlan: floorPlan || null,
+          photo: photo || null,
+          type: newType || "general",
+          color: newColor || "#1faa59",
+          isMainGate: false,
+        };
+        if (editingId === null) updated.push(obj);
+        else updated = updated.map((it) => (it.id === editingId ? obj : it));
+      } else if (addKind === 'court') {
+        const obj = {
+          id: newId,
+          kind: 'court',
+          name: newName.trim(),
+          courtType: newCourtType || 'basketball',
+          x: safeNum(newX) || 220,
+          y: safeNum(newY) || 120,
+          color: '#d9b382',
+        };
+        if (editingId === null) updated.push(obj);
+        else updated = updated.map((it) => (it.id === editingId ? obj : it));
+      } else if (addKind === 'tree') {
+        const obj = {
+          id: newId,
+          kind: 'tree',
+          name: newName.trim(),
+          species: newTreeSpecies || null,
+          x: safeNum(newX) || 140,
+          y: safeNum(newY) || 140,
+          color: newTreeColor || '#1faa59',
+        };
+        if (editingId === null) updated.push(obj);
+        else updated = updated.map((it) => (it.id === editingId ? obj : it));
+      } else if (addKind === 'other') {
+        const obj = {
+          id: newId,
+          kind: 'other',
+          name: newName.trim(),
+          meta: newOtherMeta || null,
+          x: safeNum(newX) || 180,
+          y: safeNum(newY) || 120,
+          color: newColor || '#9c27b0',
+        };
+        if (editingId === null) updated.push(obj);
+        else updated = updated.map((it) => (it.id === editingId ? obj : it));
+      }
     }
 
     setBuildings(updated);
-    saveToStorage(updated);
+    // ensure AsyncStorage write completes before closing modal so other screens
+    // that read from storage (or a storage-first loader) see the latest data
+    await saveToStorage(updated);
+    // quick confirmation for debugging: alert saved kind and coords
+    try {
+      const saved = updated.find((it) => it.id === newId);
+      if (saved) {
+        Alert.alert("Saved", `${saved.kind} "${saved.name}" saved at (${saved.x}, ${saved.y})`);
+      }
+    } catch (e) {
+      console.log("SAVE CONFIRM ERROR", e);
+    }
     setModalVisible(false);
   };
 
@@ -299,17 +362,30 @@ export default function AdminDashboard() {
           <Text style={styles.headerSubtitle}>Manage Campus Buildings & Gates</Text>
         </View>
 
-        <View style={styles.buttonRow}>
-          <TouchableOpacity style={styles.addButton} onPress={() => openAddModal("building")}>
-            <Ionicons name="business" size={18} color="#fff" />
-            <Text style={styles.addButtonText}>Add Building</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity style={[styles.addButton, { backgroundColor: "#2a7dff" }]} onPress={() => openAddModal("gate")}>
-            <Ionicons name="md-enter" size={18} color="#fff" />
-            <Text style={styles.addButtonText}>Add Gate</Text>
-          </TouchableOpacity>
-        </View>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 16 }}>
+          <View style={styles.buttonRow}>
+            <TouchableOpacity style={styles.addButton} onPress={() => openAddModal("building")}>
+              <Ionicons name="business" size={18} color="#fff" />
+              <Text style={styles.addButtonText}>Add Building</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.addButton, { backgroundColor: "#2a7dff" }]} onPress={() => openAddModal("gate")}>
+              <Ionicons name="log-in" size={18} color="#fff" />
+              <Text style={styles.addButtonText}>Add Gate</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.addButton, { backgroundColor: "#ff8800" }]} onPress={() => openAddModal("court") }>
+              <Ionicons name="ios-snow" size={18} color="#fff" />
+              <Text style={styles.addButtonText}>Add Court</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.addButton, { backgroundColor: "#4fc3f7" }]} onPress={() => openAddModal("tree") }>
+              <Ionicons name="leaf" size={18} color="#fff" />
+              <Text style={styles.addButtonText}>Add Tree</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.addButton, { backgroundColor: "#9c27b0" }]} onPress={() => openAddModal("other") }>
+              <Ionicons name="apps" size={18} color="#fff" />
+              <Text style={styles.addButtonText}>Add Other</Text>
+            </TouchableOpacity>
+          </View>
+        </ScrollView>
 
         <View style={styles.buildingList}>
           {allItems.map((it) => (
@@ -322,11 +398,17 @@ export default function AdminDashboard() {
                         {it.gateIcon ? (
                           <Image source={{ uri: it.gateIcon }} style={{ width: 46, height: 46, resizeMode: "cover" }} />
                         ) : (
-                          <Ionicons name="md-enter" size={20} color="#fff" />
+                          <Ionicons name="log-in" size={20} color="#fff" />
                         )}
                       </View>
                       <Text style={{ fontSize: 11, color: "#444", marginTop: 4 }}>{it.isMainGate ? "Primary" : "Gate"}</Text>
                     </View>
+                  ) : it.kind === 'court' ? (
+                    <View style={{ width: 46, height: 46, borderRadius: 8, backgroundColor: it.color || '#d9b382', alignItems: 'center', justifyContent: 'center' }}>
+                      <Ionicons name="basketball" size={20} color="#fff" />
+                    </View>
+                  ) : it.kind === 'tree' ? (
+                    <View style={{ width: 46, height: 46, borderRadius: 999, backgroundColor: it.color || '#1faa59' }} />
                   ) : (
                     <View style={{ width: 46, height: 46, borderRadius: 8, backgroundColor: it.color || "#1faa59" }} />
                   )}
@@ -363,12 +445,12 @@ export default function AdminDashboard() {
         <View style={styles.modalContainer}>
           <SafeAreaView style={styles.modalInner} edges={["top", "bottom"]}>
             <ScrollView style={styles.modalScroll} contentContainerStyle={{ padding: 16 }}>
-              <Text style={styles.modalTitle}>{editingId ? "Edit Item" : addKind === "gate" ? "Add Gate" : "Add Building"}</Text>
+              <Text style={styles.modalTitle}>{editingId ? "Edit Item" : addKind === "gate" ? "Add Gate" : addKind === 'court' ? 'Add Court' : addKind === 'tree' ? 'Add Tree' : addKind === 'other' ? 'Add Other' : 'Add Building'}</Text>
 
               <TextInput style={styles.input} placeholder="Name" value={newName} onChangeText={setNewName} />
 
-              {/* kind-specific fields */}
-              {addKind === "building" ? (
+              {/* building fields */}
+              {addKind === "building" && (
                 <>
                   <TextInput style={styles.input} placeholder="Department" value={newDept} onChangeText={setNewDept} />
                   <TextInput style={styles.input} placeholder="Rooms (comma separated)" value={newRooms} onChangeText={setNewRooms} />
@@ -416,9 +498,11 @@ export default function AdminDashboard() {
                     </ScrollView>
                   )}
                 </>
-              ) : (
+              )}
+
+              {/* gate fields */}
+              {addKind === "gate" && (
                 <>
-                  {/* Gate-specific */}
                   <Text style={{ color: "#666", marginBottom: 6 }}>Gate position</Text>
                   <View style={{ flexDirection: "row", gap: 8 }}>
                     <TextInput style={[styles.input, { flex: 1 }]} placeholder="X Position" keyboardType="numeric" value={newX} onChangeText={setNewX} />
@@ -442,12 +526,65 @@ export default function AdminDashboard() {
                   </View>
                 </>
               )}
+
+              {/* Court-specific */}
+              {addKind === "court" && (
+                <>
+                  <Text style={{ fontWeight: "700", marginBottom: 6 }}>Court Type</Text>
+                  <View style={{ flexDirection: 'row', gap: 8, marginBottom: 10 }}>
+                    <TouchableOpacity onPress={() => setNewCourtType('basketball')} style={[styles.typeBtn, newCourtType === 'basketball' ? { backgroundColor: '#333' } : { backgroundColor: '#eee' }]}>
+                      <Text style={{ color: newCourtType === 'basketball' ? '#fff' : '#333', fontWeight: '700' }}>Basketball</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity onPress={() => setNewCourtType('volleyball')} style={[styles.typeBtn, newCourtType === 'volleyball' ? { backgroundColor: '#333' } : { backgroundColor: '#eee' }]}>
+                      <Text style={{ color: newCourtType === 'volleyball' ? '#fff' : '#333', fontWeight: '700' }}>Volleyball</Text>
+                    </TouchableOpacity>
+                     <TouchableOpacity onPress={() => setNewCourtType('others')} style={[styles.typeBtn, newCourtType === 'others' ? { backgroundColor: '#333' } : { backgroundColor: '#eee' }]}>
+                      <Text style={{ color: newCourtType === 'others' ? '#fff' : '#333', fontWeight: '700' }}>Others</Text>
+                      </TouchableOpacity>
+                  </View>
+
+                  <TextInput style={styles.input} placeholder="X Position" keyboardType="numeric" value={newX} onChangeText={setNewX} />
+                  <TextInput style={styles.input} placeholder="Y Position" keyboardType="numeric" value={newY} onChangeText={setNewY} />
+                </>
+              )}
+
+              {/* Tree-specific */}
+              {addKind === "tree" && (
+                <>
+                  <TextInput style={styles.input} placeholder="Tree Species (optional)" value={newTreeSpecies} onChangeText={setNewTreeSpecies} />
+                  <Text style={{ fontWeight: '700', marginBottom: 6 }}>Color</Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                    {COLOR_PRESETS.map((c) => (
+                      <TouchableOpacity key={c} onPress={() => setNewTreeColor(c)} style={[styles.colorSwatch, { backgroundColor: c, borderWidth: newTreeColor === c ? 3 : 0 }]} />
+                    ))}
+                    <TextInput value={newTreeColor} onChangeText={(t) => setNewTreeColor(t.startsWith('#') ? t : `#${t}`)} placeholder="#rrggbb" style={[styles.input, { width: 110, paddingHorizontal: 8 }]} />
+                  </View>
+                  <TextInput style={styles.input} placeholder="X Position" keyboardType="numeric" value={newX} onChangeText={setNewX} />
+                  <TextInput style={styles.input} placeholder="Y Position" keyboardType="numeric" value={newY} onChangeText={setNewY} />
+                </>
+              )}
+
+              {/* Other-specific */}
+              {addKind === "other" && (
+                <>
+                  <TextInput style={styles.input} placeholder="Meta / Notes (optional)" value={newOtherMeta} onChangeText={setNewOtherMeta} />
+                  <Text style={{ fontWeight: '700', marginBottom: 6 }}>Color</Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                    {COLOR_PRESETS.map((c) => (
+                      <TouchableOpacity key={c} onPress={() => setNewColor(c)} style={[styles.colorSwatch, { backgroundColor: c, borderWidth: newColor === c ? 3 : 0 }]} />
+                    ))}
+                    <TextInput value={newColor} onChangeText={(t) => setNewColor(t.startsWith('#') ? t : `#${t}`)} placeholder="#rrggbb" style={[styles.input, { width: 110, paddingHorizontal: 8 }]} />
+                  </View>
+                  <TextInput style={styles.input} placeholder="X Position" keyboardType="numeric" value={newX} onChangeText={setNewX} />
+                  <TextInput style={styles.input} placeholder="Y Position" keyboardType="numeric" value={newY} onChangeText={setNewY} />
+                </>
+              )}
             </ScrollView>
 
             {/* Sticky footer so Save/Cancel are always reachable */}
             <View style={styles.modalFooter}>
               <TouchableOpacity style={[styles.footerPrimary, styles.modalFooterButton]} onPress={saveItem}>
-                <Text style={styles.addBuildingText}>{editingId ? "Save Changes" : addKind === "gate" ? "Add Gate" : "Add Building"}</Text>
+                <Text style={styles.addBuildingText}>{editingId ? "Save Changes" : addKind === "gate" ? "Add Gate" : addKind === 'court' ? 'Add Court' : addKind === 'tree' ? 'Add Tree' : addKind === 'other' ? 'Add Other' : 'Add Building'}</Text>
               </TouchableOpacity>
               <TouchableOpacity style={[styles.footerSecondary, styles.modalFooterButton]} onPress={() => setModalVisible(false)}>
                 <Text style={styles.cancelText}>Cancel</Text>
