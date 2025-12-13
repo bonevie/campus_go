@@ -364,7 +364,8 @@ function VisitorMapInner({ navigation }) {
 
   const filtered = localBuildings.filter((b) => (b.name || "").toLowerCase().includes((search || "").toLowerCase()));
   const calculateWalkingTime = (steps) => Math.ceil((Number(steps) || 0) / 80);
-  const getCenter = (b) => ({ x: (Number(b.x) || 0) + 35, y: (Number(b.y) || 0) + 35 });
+  // Use the building's raw coordinates as its logical center for routing/positioning.
+  const getCenter = (b) => ({ x: (Number(b.x) || 0), y: (Number(b.y) || 0) });
   const findPrimaryGate = () => localBuildings.find((b) => b.kind === "gate" && b.isMainGate) || localBuildings.find((b) => b.kind === "gate");
 
   const handleSearchSubmit = (text) => {
@@ -1065,7 +1066,7 @@ function VisitorMapInner({ navigation }) {
 
   const centerOnBuilding = (b) => {
     const s = scaleValueRef.current;
-    const target = { x: (Number(b.x) || 0) + 35, y: (Number(b.y) || 0) + 35 };
+    const target = { x: (Number(b.x) || 0), y: (Number(b.y) || 0) };
     const screenCenterX = SCREEN_WIDTH / 2;
     const screenCenterY = (mapLayout ? mapLayout.y : 165) + (mapLayout ? mapLayout.height / 2 : 165);
     const toX = screenCenterX - target.x * s;
@@ -1479,6 +1480,10 @@ function VisitorMapInner({ navigation }) {
                       const bubbleH = 24;
                       const bubbleX = center.x - bubbleW / 2;
                       const bubbleY = roofCenter.y - halfH - bubbleH - 8;
+                      // Clamp bubble horizontally so it remains fully visible inside the map
+                      const clampedBubbleX = Math.max(6, Math.min((MAP_WIDTH || 0) - bubbleW - 6, bubbleX));
+                      // keep pointer aligned to building but ensure it stays within bubble bounds
+                      const pointerCenterX = Math.max(clampedBubbleX + 8, Math.min(clampedBubbleX + bubbleW - 8, center.x));
 
                       return (
                         <G key={`pt-${b.id}`} onPress={() => setSelectedBuilding(b)}>
@@ -1505,9 +1510,9 @@ function VisitorMapInner({ navigation }) {
 
                           {/* name bubble */}
                           <G>
-                            <Rect x={bubbleX} y={bubbleY} width={bubbleW} height={bubbleH} rx={bubbleH / 2} fill="#ffffff" stroke="rgba(0,0,0,0.06)" />
-                            <Polygon points={`${center.x - 6},${bubbleY + bubbleH} ${center.x + 6},${bubbleY + bubbleH} ${center.x},${bubbleY + bubbleH + 8}`} fill="#ffffff" />
-                            <SvgText x={bubbleX + bubbleW / 2} y={bubbleY + bubbleH / 2 + 4} fontSize={12} fontWeight="700" fill="#222" textAnchor="middle">{name}</SvgText>
+                            <Rect x={clampedBubbleX} y={bubbleY} width={bubbleW} height={bubbleH} rx={bubbleH / 2} fill="#ffffff" stroke="rgba(0,0,0,0.06)" />
+                            <Polygon points={`${pointerCenterX - 6},${bubbleY + bubbleH} ${pointerCenterX + 6},${bubbleY + bubbleH} ${pointerCenterX},${bubbleY + bubbleH + 8}`} fill="#ffffff" />
+                            <SvgText x={clampedBubbleX + bubbleW / 2} y={bubbleY + bubbleH / 2 + 4} fontSize={12} fontWeight="700" fill="#222" textAnchor="middle">{name}</SvgText>
                           </G>
                         </G>
                       );
@@ -1600,7 +1605,7 @@ function VisitorMapInner({ navigation }) {
           </View>
         </View>
 
-        <Text style={styles.sectionTitle}>All Campus Items</Text>
+        <Text style={styles.sectionTitle}>Tap the Building below - view exterior image and floor plan </Text>
         {filtered.filter((it) => it.kind !== 'tree').map((it) => (
           <TouchableOpacity
             key={it.id}
@@ -1787,7 +1792,7 @@ const styles = StyleSheet.create({
   nameBubbleText: { fontSize: 12, fontWeight: "700" },
 
   /* Gate */
-  gateTouch: { position: "absolute", alignItems: "center", width: 72, height: 72 },
+  gateTouch: { position: "absolute", alignItems: "center", minWidth: 72, minHeight: 72, paddingHorizontal: 6 },
   gateLabel: { marginTop: 6, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 12, backgroundColor: "rgba(42,125,255,0.95)", alignItems: "center", justifyContent: "center", elevation: 8, shadowColor: "#000", shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.18, shadowRadius: 8 },
   gateLabelText: { color: "#fff", fontWeight: "800", fontSize: 12 },
 

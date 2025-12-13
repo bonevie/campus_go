@@ -688,7 +688,7 @@ case "schedule":
                 <View style={styles.faqContent}>
                   <Text style={styles.answerText}>
                     1. Open the Map tab {"\n"}
-                    2. Pinch to zoom or drag to pan {"\n"}
+                    2. drag to pan {"\n"}
                     3. Tap any building marker to view details
                   </Text>
                 </View>
