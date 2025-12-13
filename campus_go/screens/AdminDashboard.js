@@ -50,6 +50,12 @@ export default function AdminDashboard() {
   const [photo, setPhoto] = useState(null); // exterior / facade photo
   const [newType, setNewType] = useState("general");
   const [newColor, setNewColor] = useState("#1faa59");
+  // room polygons editor state (normalized coordinates 0..1)
+  const [newRoomsPolygons, setNewRoomsPolygons] = useState({});
+  const [roomsEditorVisible, setRoomsEditorVisible] = useState(false);
+  const [editorPoints, setEditorPoints] = useState([]);
+  const [editorLayout, setEditorLayout] = useState(null);
+  const [editorRoomName, setEditorRoomName] = useState("");
 
   // gate fields (separate)
   const [gateIcon, setGateIcon] = useState(null);
@@ -149,6 +155,7 @@ export default function AdminDashboard() {
     setNewCourtType("basketball");
     setNewTreeSpecies("");
     setNewTreeColor("#1faa59");
+    setNewRoomsPolygons({});
     setModalVisible(true);
   };
 
@@ -168,6 +175,7 @@ export default function AdminDashboard() {
     setNewColor(item.color || "#1faa59");
     setGateIcon(item.gateIcon || null);
     setGateIsPrimary(!!item.isMainGate);
+    setNewRoomsPolygons(item.roomPolygons || {});
     setModalVisible(true);
   };
 
@@ -242,6 +250,7 @@ export default function AdminDashboard() {
           photo: photo || null,
           type: newType || "general",
           color: newColor || "#1faa59",
+          roomPolygons: newRoomsPolygons || {},
           isMainGate: false,
         };
         if (editingId === null) updated.push(obj);
@@ -497,6 +506,12 @@ export default function AdminDashboard() {
                       )}
                     </ScrollView>
                   )}
+
+                  <View style={{ marginTop: 10 }}>
+                    <TouchableOpacity style={[styles.uploadBtn, { backgroundColor: '#2e7d32' }]} onPress={() => setRoomsEditorVisible(true)}>
+                      <Text style={{ color: '#fff' }}>{Object.keys(newRoomsPolygons || {}).length ? 'Edit Rooms on Floor Plan' : 'Edit Rooms on Floor Plan'}</Text>
+                    </TouchableOpacity>
+                  </View>
                 </>
               )}
 
@@ -582,12 +597,90 @@ export default function AdminDashboard() {
             </ScrollView>
 
             {/* Sticky footer so Save/Cancel are always reachable */}
+            {/* Rooms editor modal moved to top-level (separate modal) */}
             <View style={styles.modalFooter}>
               <TouchableOpacity style={[styles.footerPrimary, styles.modalFooterButton]} onPress={saveItem}>
                 <Text style={styles.addBuildingText}>{editingId ? "Save Changes" : addKind === "gate" ? "Add Gate" : addKind === 'court' ? 'Add Court' : addKind === 'tree' ? 'Add Tree' : addKind === 'other' ? 'Add Other' : 'Add Building'}</Text>
               </TouchableOpacity>
               <TouchableOpacity style={[styles.footerSecondary, styles.modalFooterButton]} onPress={() => setModalVisible(false)}>
                 <Text style={styles.cancelText}>Cancel</Text>
+              </TouchableOpacity>
+            </View>
+          </SafeAreaView>
+        </View>
+      </Modal>
+
+      {/* Top-level Rooms Editor Modal (now opaque with green backdrop like the Edit button) */}
+      <Modal visible={roomsEditorVisible} transparent={false} animationType="slide">
+        <View style={styles.modalSolidBackdrop}>
+          <SafeAreaView style={[styles.modalCard, { width: '95%', maxWidth: 720, padding: 12 }] }>
+            <ScrollView contentContainerStyle={{ paddingBottom: 12 }}>
+              <Text style={{ fontSize: 18, fontWeight: '700', marginBottom: 8 }}>Rooms Editor</Text>
+              {!floorPlan ? (
+                <Text>No floor plan uploaded. Upload one first.</Text>
+              ) : (
+                <>
+                  <View onLayout={(e) => setEditorLayout(e.nativeEvent.layout)} style={{ width: '100%', height: 160, backgroundColor: '#eee', borderRadius: 8, overflow: 'hidden' }}>
+                    <TouchableOpacity activeOpacity={1} style={{ flex: 1 }} onPress={(ev) => {
+                      const lay = editorLayout;
+                      if (!lay) return;
+                      const loc = ev.nativeEvent;
+                      const nx = Math.max(0, Math.min(1, loc.locationX / lay.width));
+                      const ny = Math.max(0, Math.min(1, loc.locationY / lay.height));
+                      setEditorPoints((p) => [...p, { x: nx, y: ny }]);
+                    }}>
+                      <Image source={{ uri: floorPlan }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+                      <View style={{ position: 'absolute', left: 0, top: 0, right: 0, bottom: 0 }} pointerEvents="none">
+                        {(editorPoints || []).map((pt, i) => (
+                          <View key={i} style={{ position: 'absolute', left: `${pt.x * 100}%`, top: `${pt.y * 100}%`, width: 12, height: 12, borderRadius: 8, backgroundColor: '#1faa59', transform: [{ translateX: -6 }, { translateY: -6 }] }} />
+                        ))}
+                      </View>
+                    </TouchableOpacity>
+                  </View>
+
+                  <TextInput placeholder="Room name (e.g. IT RM 1)" value={editorRoomName} onChangeText={setEditorRoomName} style={[styles.input, { width: '100%', marginTop: 8 }]} />
+
+                  <View style={{ flexDirection: 'row', marginTop: 8 }}>
+                    <TouchableOpacity style={[styles.uploadBtn, { flex: 1, marginRight: 8 }]} onPress={() => {
+                      if (!editorRoomName.trim() || (editorPoints || []).length < 3) { Alert.alert('Invalid', 'Provide a name and at least 3 points'); return; }
+                      setNewRoomsPolygons((prev) => ({ ...(prev || {}), [editorRoomName.trim()]: editorPoints }));
+                      setEditorPoints([]);
+                      setEditorRoomName('');
+                    }}>
+                      <Text style={{ color: '#fff' }}>Save Polygon</Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity style={[styles.uploadBtnAlt, { width: 120 }]} onPress={() => setEditorPoints([])}>
+                      <Text style={{ color: '#fff' }}>Clear Points</Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  <View style={{ marginTop: 14 }}>
+                    <Text style={{ fontWeight: '700', marginBottom: 8 }}>Saved Rooms</Text>
+                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                      {Object.keys(newRoomsPolygons || {}).length === 0 ? (
+                        <Text style={{ color: '#666' }}>No rooms saved yet.</Text>
+                      ) : (
+                        Object.keys(newRoomsPolygons || {}).map((r) => (
+                          <View key={r} style={{ marginRight: 8, marginBottom: 8, alignItems: 'center' }}>
+                            <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: '#f1f1f1', paddingVertical: 6, paddingHorizontal: 10, borderRadius: 8 }}>
+                              <Text style={{ marginRight: 8 }}>{r}</Text>
+                              <TouchableOpacity onPress={() => { const copy = { ...(newRoomsPolygons || {}) }; delete copy[r]; setNewRoomsPolygons(copy); }}>
+                                <Text style={{ color: 'red' }}>Remove</Text>
+                              </TouchableOpacity>
+                            </View>
+                          </View>
+                        ))
+                      )}
+                    </View>
+                  </View>
+                </>
+              )}
+            </ScrollView>
+
+            <View style={{ flexDirection: 'row', justifyContent: 'flex-end', marginTop: 10 }}>
+              <TouchableOpacity style={[styles.doneBtn, { marginRight: 8 }]} onPress={() => setRoomsEditorVisible(false)}>
+                <Text style={styles.doneBtnText}>Done</Text>
               </TouchableOpacity>
             </View>
           </SafeAreaView>
@@ -641,6 +734,9 @@ const styles = StyleSheet.create({
   footerPrimary: { backgroundColor: '#000', padding: 12, borderRadius: 8, alignItems: 'center' },
   footerSecondary: { backgroundColor: '#ccc', padding: 12, borderRadius: 8, alignItems: 'center' },
   cancelText: { fontSize: 16, color: "#333" },
+  modalSolidBackdrop: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#2e7d32' },
+  doneBtn: { backgroundColor: '#2e7d32', padding: 12, borderRadius: 8, alignItems: 'center' },
+  doneBtnText: { color: '#fff', fontSize: 16 },
   bottomBar: { flexDirection: "row", justifyContent: "space-around", alignItems: "center", paddingVertical: 12, backgroundColor: "#fff", borderTopWidth: 1, borderColor: "#ddd" },
   bottomItem: { alignItems: "center" },
   bottomLabel: { fontSize: 12, color: "#444", marginTop: 3 },

@@ -74,6 +74,7 @@ export default function UserDashboard({ navigation, route }) {
   };
 
   const [activeTab, setActiveTab] = useState("home");
+  const [mapFocus, setMapFocus] = useState(null);
   const [schedule, setSchedule] = useState([]);
 
   // route user object (from Login)
@@ -449,9 +450,16 @@ const getOrderedDays = (sched) => {
                         size={18}
                         color="#666"
                       />
-                      <Text style={styles.infoText}>
-                        {c.room} • {c.building}
-                      </Text>
+                      <TouchableOpacity
+                        onPress={() => {
+                          setMapFocus({ building: c.building, room: c.room });
+                          setActiveTab("map");
+                        }}
+                      >
+                        <Text style={styles.infoText}>
+                          {c.room} • {c.building}
+                        </Text>
+                      </TouchableOpacity>
                     </View>
                   </View>
                 ))
@@ -551,9 +559,16 @@ case "schedule":
 
                             <View style={styles.infoRow}>
                               <Ionicons name="location-outline" size={18} color="#555" />
-                              <Text style={styles.infoText}>
-                                {c.room} • {c.building}
-                              </Text>
+                              <TouchableOpacity
+                                onPress={() => {
+                                  setMapFocus({ building: c.building, room: c.room });
+                                  setActiveTab("map");
+                                }}
+                              >
+                                <Text style={styles.infoText}>
+                                  {c.room} • {c.building}
+                                </Text>
+                              </TouchableOpacity>
                             </View>
 
                             <View style={styles.infoRow}>
@@ -587,7 +602,7 @@ case "schedule":
       case "map":
         return (
           <View style={{ flex: 1 }}>
-            <VisitorMap navigation={navigation} />
+            <VisitorMap navigation={navigation} focus={mapFocus} onFocusHandled={() => setMapFocus(null)} />
           </View>
         );
 
@@ -688,8 +703,9 @@ case "schedule":
                 <View style={styles.faqContent}>
                   <Text style={styles.answerText}>
                     1. Open the Map tab {"\n"}
-                    2. drag to pan {"\n"}
-                    3. Tap any building marker to view details
+                    2. Drag to pan or pinch to zoom {"\n"}
+                    3. Tap any building to open the same details modal (exterior photo & floor plan)
+                    4. From the Dashboard you can also tap a class location (e.g. "Lab B • CTECH Building") — it will open the Map and show the building modal.
                   </Text>
                 </View>
               )}
@@ -724,9 +740,10 @@ case "schedule":
               {faqOpen.navigateBuildings && (
                 <View style={styles.faqContent}>
                   <Text style={styles.answerText}>
-                    1. Tap a building on the map {"\n"}
-                    2. View floor plans (if available) {"\n"}
-                    3. Follow highlighted path or use the map legend
+                    1. Tap a building on the map to open its details modal {"\n"}
+                    2. View exterior photo and floor plans (if available) {"\n"}
+                    3. Tap room chips in the modal to highlight rooms on the floor plan {"\n"}
+                    4. Use the map legend to follow routes or see building types
                   </Text>
                 </View>
               )}

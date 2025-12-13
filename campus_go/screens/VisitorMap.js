@@ -59,7 +59,7 @@ function lighten(hex, amt = 0.12) {
   }
 }
 
-function VisitorMapInner({ navigation }) {
+function VisitorMapInner({ navigation, route, focus, onFocusHandled }) {
   const [windowSize, setWindowSize] = useState(Dimensions.get("window"));
   useEffect(() => {
     const handler = ({ window }) => setWindowSize(window);
@@ -81,6 +81,7 @@ function VisitorMapInner({ navigation }) {
   const { buildings } = useContext(BuildingsContext);
   const [search, setSearch] = useState("");
   const [selectedBuilding, setSelectedBuilding] = useState(null);
+  const [selectedRoom, setSelectedRoom] = useState(null);
   const [localBuildings, setLocalBuildings] = useState([]);
 
   // Floor plan modal visible state (we use this for list -> floor plan modal)
@@ -168,6 +169,102 @@ function VisitorMapInner({ navigation }) {
     scale.setValue(newScale);
   };
 
+  // If navigation provided a building/room to focus, center and open it once localBuildings are loaded
+  React.useEffect(() => {
+    try {
+      const params = (route && route.params) || focus || {};
+      const bname = params.building;
+      const rname = params.room;
+      if (!bname || !localBuildings || localBuildings.length === 0) return;
+      const q = String(bname).toLowerCase().trim();
+
+      const normalize = (s) => (String(s || "").toLowerCase().replace(/\b(building|bldg|blg)\b/g, "").replace(/[^a-z0-9]/g, " ").replace(/\s+/g, " ").trim());
+
+      const tryFindMatch = (arr) => {
+        if (!arr || !arr.length) return null;
+        // 1) exact match (case-insensitive)
+        let found = arr.find((bb) => (bb.name || "").toLowerCase() === q);
+        if (found) return found;
+
+        // 2) includes match only for longer queries (avoid short substrings matching wrong names)
+        if (q.length >= 4 || q.indexOf(" ") !== -1) {
+          found = arr.find((bb) => (bb.name || "").toLowerCase().includes(q));
+          if (found) return found;
+        }
+
+        // 3) normalized compare (remove 'building' etc)
+        const nq = normalize(q);
+        found = arr.find((bb) => normalize(bb.name) === nq);
+        if (found) return found;
+
+        if (nq.length >= 4 || nq.indexOf(" ") !== -1) {
+          found = arr.find((bb) => normalize(bb.name).includes(nq) || nq.includes(normalize(bb.name)));
+          if (found) return found;
+        }
+
+        // 4) token-match: require exact token equality for short tokens (<3), allow substring for longer tokens
+        const qTokens = (nq || "").split(" ").filter(Boolean);
+        if (qTokens.length) {
+          found = arr.find((bb) => {
+            const nn = normalize(bb.name || "");
+            const nameTokens = nn.split(" ").filter(Boolean);
+            return qTokens.every((t) => {
+              if (t.length < 3) {
+                return nameTokens.includes(t);
+              }
+              return nameTokens.some((nt) => nt.includes(t));
+            });
+          });
+          if (found) return found;
+        }
+
+        return null;
+      };
+
+      let match = tryFindMatch(localBuildings) || tryFindMatch(buildings || []);
+
+      const ensureImagesFromStorage = async (candidate) => {
+        try {
+          if (!candidate) return candidate;
+          // if candidate already has a photo or floorPlan, return it
+          if (candidate.photo || candidate.floorPlan) return candidate;
+          const stored = await AsyncStorage.getItem("campusBuildings");
+          if (!stored) return candidate;
+          const parsed = JSON.parse(stored || "[]");
+          const found = parsed.find((p) => (p.id && candidate.id && p.id === candidate.id) || normalize(p.name || "") === normalize(candidate.name || "") || (p.name || "").toLowerCase().includes(q) );
+          if (found) return { ...candidate, ...found };
+          // if not found by id/name, try to find any record matching q tokens
+          const nq = normalize(q);
+          if (!found) {
+            const byTokens = parsed.find((p) => normalize(p.name || "").includes(nq) || (nq.split(" ").every(t => normalize(p.name || "").includes(t))));
+            if (byTokens) return { ...candidate, ...byTokens };
+          }
+        } catch (e) {
+          // ignore storage errors
+        }
+        return candidate;
+      };
+
+      (async () => {
+        try {
+          match = await ensureImagesFromStorage(match);
+          if (!match) return;
+          setTimeout(() => {
+            try {
+              centerOnBuilding(match);
+              setSelectedBuilding(match);
+              if (rname) setSelectedRoom(rname);
+              setFloorPlanModalVisible(true);
+              try { if (typeof onFocusHandled === 'function') onFocusHandled(); } catch (e) {}
+            } catch (e) {
+              // ignore
+            }
+          }, 140);
+        } catch (e) {}
+      })();
+    } catch (e) {}
+  }, [localBuildings, route && route.params, focus]);
+
   const onPinchStateChange = (ev) => {
     const s = ev.nativeEvent || {};
     if (s.state === GHState.END || s.oldState === GHState.ACTIVE) {
@@ -237,6 +334,56 @@ function VisitorMapInner({ navigation }) {
 
   // for double-tap
   const lastTapRef = useRef(0);
+
+  // room polygon overlays (normalized coordinates 0..1)
+  const ROOM_POLYGONS = {
+    // building id 7 corresponds to CTECH Building in BuildingsContext initial data
+    7: {
+      // approximate rectangles given as polygon points (x,y) normalized to image size
+      "IT RM 1": [
+        { x: 0.05, y: 0.12 },
+        { x: 0.34, y: 0.12 },
+        { x: 0.34, y: 0.48 },
+        { x: 0.05, y: 0.48 },
+      ],
+      "Faculty Office": [
+        { x: 0.36, y: 0.12 },
+        { x: 0.63, y: 0.12 },
+        { x: 0.63, y: 0.48 },
+        { x: 0.36, y: 0.48 },
+      ],
+      "Lab B": [
+        { x: 0.18, y: 0.5 },
+        { x: 0.35, y: 0.5 },
+        { x: 0.35, y: 0.7 },
+        { x: 0.18, y: 0.7 },
+      ],
+      "Lab C": [
+        { x: 0.38, y: 0.5 },
+        { x: 0.55, y: 0.5 },
+        { x: 0.55, y: 0.7 },
+        { x: 0.38, y: 0.7 },
+      ],
+      Multimedia: [
+        { x: 0.70, y: 0.18 },
+        { x: 0.95, y: 0.18 },
+        { x: 0.95, y: 0.7 },
+        { x: 0.70, y: 0.7 },
+      ],
+      "Dean's Office": [
+        { x: 0.02, y: 0.72 },
+        { x: 0.18, y: 0.72 },
+        { x: 0.18, y: 0.9 },
+        { x: 0.02, y: 0.9 },
+      ],
+      CR: [
+        { x: 0.86, y: 0.02 },
+        { x: 0.98, y: 0.02 },
+        { x: 0.98, y: 0.14 },
+        { x: 0.86, y: 0.14 },
+      ],
+    },
+  };
 
   // route + animation
   const [routeStops, setRouteStops] = useState([]);
@@ -572,7 +719,7 @@ function VisitorMapInner({ navigation }) {
     }
     return pts;
   };
-  const polylinePointsString = (pts) => pts.map((p) => `${p.x},${p.y}`).join(" ");
+  const polylinePointsString = (pts) => pts.map((p) => `${Math.round(p.x)},${Math.round(p.y)}`).join(" ");
   const buildSegmentInfo = (pts) => {
     const segs = []; let total = 0;
     for (let i = 0; i < pts.length - 1; i++) {
@@ -1296,8 +1443,8 @@ function VisitorMapInner({ navigation }) {
     }}
   >
 
-              <Svg width="100%" height="100%" style={StyleSheet.absoluteFill} viewBox={`0 0 ${MAP_WIDTH} ${MAP_HEIGHT}`}>
-                <G opacity={1}>{mode === 'diorama' ? renderCampusPathsIso() : renderCampusPaths()}</G>
+              <Svg width="100%" height="100%" style={StyleSheet.absoluteFill} viewBox={`0 0 ${MAP_WIDTH} ${MAP_HEIGHT}`} shapeRendering="crispEdges" preserveAspectRatio="xMidYMid meet">
+                <G strokeLinejoin="miter" strokeLinecap="square" opacity={1}>{mode === 'diorama' ? renderCampusPathsIso() : renderCampusPaths()}</G>
 
                 {/* ---------- START: INSERTED CUSTOM ROADS ---------- */}
                 {mode === 'diorama' ? renderCustomRoadsIso() : (
@@ -1325,8 +1472,8 @@ function VisitorMapInner({ navigation }) {
 
                 {routePoints.length >= 2 && (
                   <>
-                    <Polyline points={polylinePointsString(routePoints)} fill="none" stroke={green} strokeWidth={18} strokeLinecap="round" strokeLinejoin="round" />
-                    <Polyline points={polylinePointsString(routePoints)} fill="none" stroke="#ffffff" strokeWidth={6} strokeLinecap="round" strokeLinejoin="round" />
+                    <Polyline points={polylinePointsString(routePoints)} fill="none" stroke={green} strokeWidth={18} strokeLinecap="square" strokeLinejoin="miter" />
+                      <Polyline points={polylinePointsString(routePoints)} fill="none" stroke="#ffffff" strokeWidth={6} strokeLinecap="square" strokeLinejoin="miter" />
                     {routePoints.map((p, i) => <Circle key={i} cx={p.x} cy={p.y} r={6} fill="#fff" stroke={green} strokeWidth={3} />)}
                   </>
                 )}
@@ -1399,21 +1546,21 @@ function VisitorMapInner({ navigation }) {
 
                       return (
                         <G key={`tree-${b.id}`} onPress={() => setSelectedBuilding(b)}>
-                          {/* soft ground shadow */}
-                          <Ellipse cx={bx} cy={by + 22} rx={18} ry={6} fill="rgba(0,0,0,0.12)" />
+                          {/* pixelated ground shadow */}
+                          <Ellipse cx={bx} cy={by + 22} rx={18} ry={6} fill="rgba(0,0,0,0.18)" />
 
-                          {/* bottom (largest) foliage layer */}
-                          <Polygon points={botPts} fill={canopyBot} stroke={strokeBot} strokeWidth={0.8} />
+                          {/* bottom (largest) foliage layer - pixelated */}
+                          <Polygon points={botPts} fill={canopyBot} stroke={strokeBot} strokeWidth={1.2} />
                           {/* mid foliage layer */}
-                          <Polygon points={midPts} fill={canopyMid} stroke={strokeMid} strokeWidth={0.8} />
+                          <Polygon points={midPts} fill={canopyMid} stroke={strokeMid} strokeWidth={1.2} />
                           {/* top foliage layer */}
-                          <Polygon points={topPts} fill={canopyTop} stroke={strokeTop} strokeWidth={0.8} />
+                          <Polygon points={topPts} fill={canopyTop} stroke={strokeTop} strokeWidth={1.2} />
 
-                          {/* simple low-poly facet detail: a small inner triangle on mid layer */}
-                          <Polygon points={`${bx},${by - 12} ${bx - 8},${by + 2} ${bx + 8},${by + 2}`} fill={darken(canopyMid, 0.08)} opacity={0.85} />
+                          {/* pixelated facet detail: a small inner triangle on mid layer */}
+                          <Polygon points={`${bx},${by - 12} ${bx - 8},${by + 2} ${bx + 8},${by + 2}`} fill={darken(canopyMid, 0.12)} opacity={0.9} />
 
-                          {/* trunk */}
-                          <Rect x={bx - 4} y={by + 16} width={8} height={12} rx={1} fill={trunkColor} />
+                          {/* pixelated trunk */}
+                          <Rect x={bx - 4} y={by + 16} width={8} height={12} rx={0.5} fill={trunkColor} stroke={darken(trunkColor, 0.2)} strokeWidth={1.0} />
                         </G>
                       );
                     }
@@ -1429,18 +1576,18 @@ function VisitorMapInner({ navigation }) {
                       const centerY = by;
                       return (
                         <G key={`court-${b.id}`} onPressIn={() => startLongPress(b)} onPressOut={() => endLongPress(b)} onPress={() => { setSelectedBuilding(b); }}>
-                          <Rect x={left} y={top} width={w} height={h} rx={4} fill={courtColor} stroke={darken(courtColor, 0.08)} strokeWidth={1} />
-                          {/* center line */}
-                          <Path d={`M ${centerX},${top + 4} L ${centerX},${top + h - 4}`} stroke={darken(courtColor, 0.5)} strokeWidth={1.5} strokeLinecap="round" />
-                          {/* left hoop marker */}
-                          <Path d={`M ${left + 6},${centerY - 4} L ${left + 6},${centerY + 4}`} stroke={darken(courtColor, 0.5)} strokeWidth={1.2} />
-                          {/* right hoop marker */}
-                          <Path d={`M ${left + w - 6},${centerY - 4} L ${left + w - 6},${centerY + 4}`} stroke={darken(courtColor, 0.5)} strokeWidth={1.2} />
+                          <Rect x={left} y={top} width={w} height={h} rx={3} fill={courtColor} stroke={darken(courtColor, 0.15)} strokeWidth={1.5} />
+                          {/* center line - pixelated */}
+                          <Path d={`M ${centerX},${top + 4} L ${centerX},${top + h - 4}`} stroke={darken(courtColor, 0.6)} strokeWidth={2.0} strokeLinecap="square" />
+                          {/* left hoop marker - pixelated */}
+                          <Path d={`M ${left + 6},${centerY - 4} L ${left + 6},${centerY + 4}`} stroke={darken(courtColor, 0.6)} strokeWidth={1.8} />
+                          {/* right hoop marker - pixelated */}
+                          <Path d={`M ${left + w - 6},${centerY - 4} L ${left + w - 6},${centerY + 4}`} stroke={darken(courtColor, 0.6)} strokeWidth={1.8} />
                         </G>
                       );
                     }
 
-                    // default building marker — render a compact isometric block (diorama style)
+                    // default building marker — render a compact isometric block (pixelated style)
                     {
                       const floors = Math.max(1, Number(b?.floors) || Math.ceil((b?.rooms?.length || 0) / 3));
                       // Use plain map coordinates (bx,by) so buildings render where admins place them
@@ -1463,9 +1610,9 @@ function VisitorMapInner({ navigation }) {
                       const leftFace = `${pLeft.x},${pLeft.y} ${pBottom.x},${pBottom.y} ${gBottom.x},${gBottom.y} ${gLeft.x},${gLeft.y}`;
                       const rightFace = `${pRight.x},${pRight.y} ${pBottom.x},${pBottom.y} ${gBottom.x},${gBottom.y} ${gRight.x},${gRight.y}`;
 
-                      const roofColor = lighten(baseColor, 0.04);
-                      const leftColor = darken(baseColor, 0.12);
-                      const rightColor = darken(baseColor, 0.06);
+                      const roofColor = lighten(baseColor, 0.08);
+                      const leftColor = darken(baseColor, 0.18);
+                      const rightColor = darken(baseColor, 0.10);
 
                       // small window grid for front face
                       const name = (b.name || "").length > 12 ? (b.name || "").slice(0, 11) + "…" : (b.name || "");
@@ -1487,32 +1634,32 @@ function VisitorMapInner({ navigation }) {
 
                       return (
                         <G key={`pt-${b.id}`} onPress={() => setSelectedBuilding(b)}>
-                          {/* soft shadow */}
-                          <Ellipse cx={center.x} cy={center.y + 6} rx={TILE_W * 0.9} ry={TILE_H * 0.5} fill="rgba(0,0,0,0.12)" />
+                          {/* pixelated shadow */}
+                          <Ellipse cx={center.x} cy={center.y + 8} rx={TILE_W * 0.85} ry={TILE_H * 0.45} fill="rgba(0,0,0,0.18)" />
 
-                          {/* building faces */}
-                          <Polygon points={leftFace} fill={leftColor} stroke={darken(leftColor, 0.06)} strokeWidth={0.5} />
-                          <Polygon points={rightFace} fill={rightColor} stroke={darken(rightColor, 0.04)} strokeWidth={0.5} />
-                          <Polygon points={roofPoints} fill={roofColor} stroke={darken(roofColor, 0.08)} strokeWidth={0.6} />
+                          {/* building faces - pixelated style with stronger borders */}
+                          <Polygon points={leftFace} fill={leftColor} stroke={darken(leftColor, 0.12)} strokeWidth={1.0} />
+                          <Polygon points={rightFace} fill={rightColor} stroke={darken(rightColor, 0.10)} strokeWidth={1.0} />
+                          <Polygon points={roofPoints} fill={roofColor} stroke={darken(roofColor, 0.15)} strokeWidth={1.2} />
 
-                          {/* small rooftop flag */}
-                          <Path d={`M ${roofCenter.x - 6},${roofCenter.y - halfH + 2} L ${roofCenter.x - 6},${roofCenter.y - halfH - 8}`} stroke={darken(roofColor,0.4)} strokeWidth={1.2} />
-                          <Path d={`M ${roofCenter.x - 6},${roofCenter.y - halfH - 8} L ${roofCenter.x - 0.5},${roofCenter.y - halfH - 5} L ${roofCenter.x - 6},${roofCenter.y - halfH - 2} Z`} fill={darken(roofColor,0.02)} />
+                          {/* pixelated rooftop flag */}
+                          <Path d={`M ${roofCenter.x - 6},${roofCenter.y - halfH + 2} L ${roofCenter.x - 6},${roofCenter.y - halfH - 10}`} stroke={darken(roofColor,0.5)} strokeWidth={1.5} />
+                          <Path d={`M ${roofCenter.x - 6},${roofCenter.y - halfH - 10} L ${roofCenter.x},${roofCenter.y - halfH - 6} L ${roofCenter.x - 6},${roofCenter.y - halfH - 2} Z`} fill={lighten(roofColor,0.12)} stroke={darken(roofColor,0.2)} strokeWidth={0.8} />
 
-                          {/* windows on front/right face */}
+                          {/* windows on front/right face - pixelated style */}
                           {Array.from({ length: winRows }).map((_, r) => (
                             Array.from({ length: winCols }).map((__, c) => {
                               const wx = winXStart + c * (winW + 4);
                               const wy = winYStart + r * (winH + 4);
-                              return <Rect key={`w-${b.id}-${r}-${c}`} x={wx} y={wy} width={winW} height={winH} rx={1} fill="#fff" opacity={0.95} stroke={darken("#fff", 0.14)} strokeWidth={0.6} />;
+                              return <Rect key={`w-${b.id}-${r}-${c}`} x={wx} y={wy} width={winW} height={winH} rx={0.5} fill="#ffffff" opacity={0.9} stroke={darken(baseColor, 0.3)} strokeWidth={0.8} />;
                             })
                           ))}
 
-                          {/* name bubble */}
+                          {/* name bubble - pixelated style */}
                           <G>
-                            <Rect x={clampedBubbleX} y={bubbleY} width={bubbleW} height={bubbleH} rx={bubbleH / 2} fill="#ffffff" stroke="rgba(0,0,0,0.06)" />
-                            <Polygon points={`${pointerCenterX - 6},${bubbleY + bubbleH} ${pointerCenterX + 6},${bubbleY + bubbleH} ${pointerCenterX},${bubbleY + bubbleH + 8}`} fill="#ffffff" />
-                            <SvgText x={clampedBubbleX + bubbleW / 2} y={bubbleY + bubbleH / 2 + 4} fontSize={12} fontWeight="700" fill="#222" textAnchor="middle">{name}</SvgText>
+                            <Rect x={clampedBubbleX} y={bubbleY} width={bubbleW} height={bubbleH} rx={bubbleH / 2} fill="#ffffff" stroke="rgba(0,0,0,0.15)" strokeWidth={1.5} />
+                            <Polygon points={`${pointerCenterX - 6},${bubbleY + bubbleH} ${pointerCenterX + 6},${bubbleY + bubbleH} ${pointerCenterX},${bubbleY + bubbleH + 8}`} fill="#ffffff" stroke="rgba(0,0,0,0.15)" strokeWidth={1.0} />
+                            <SvgText x={clampedBubbleX + bubbleW / 2} y={bubbleY + bubbleH / 2 + 4} fontSize={11} fontWeight="800" fill="#222" textAnchor="middle">{name}</SvgText>
                           </G>
                         </G>
                       );
@@ -1697,7 +1844,16 @@ function VisitorMapInner({ navigation }) {
             </View>
 
             <View style={{ padding: 20 }}>
-              {selectedBuilding?.photo || selectedBuilding?.floorPlan ? (
+              {/* Combined building info + floor plan image. Use floorPlan as primary visual and overlay highlight for selected room. */}
+              <View style={{ marginBottom: 10 }}>
+                {selectedBuilding?.department && (<View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}><Ionicons name="school" size={16} color="#2e7d32" /><Text style={{ color: '#333' }}>{selectedBuilding.department}</Text></View>)}
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8 }}>
+                  <Ionicons name="walk" size={16} color="#2e7d32" />
+                  <Text style={{ color: '#333' }}>~{calculateWalkingTime(selectedBuilding?.stepsFromMainGate)} min walk</Text>
+                </View>
+              </View>
+
+              {(selectedBuilding?.photo || selectedBuilding?.floorPlan) ? (
                 <ScrollView
                   horizontal
                   pagingEnabled
@@ -1706,20 +1862,82 @@ function VisitorMapInner({ navigation }) {
                   contentContainerStyle={{ alignItems: 'center' }}
                 >
                   {selectedBuilding?.photo ? (
-                    <View style={{ width: VISITOR_MODAL_INNER }}>
-                      <Image source={{ uri: selectedBuilding.photo }} style={{ width: VISITOR_MODAL_INNER, height: 180, borderRadius: 12 }} resizeMode="cover" />
+                    <View style={{ width: VISITOR_MODAL_INNER, height: 180, alignSelf: 'center' }}>
+                      <Image source={{ uri: selectedBuilding.photo }} style={{ width: '100%', height: '100%', borderRadius: 12 }} resizeMode="cover" />
                     </View>
                   ) : null}
 
                   {selectedBuilding?.floorPlan ? (
-                    <View style={{ width: VISITOR_MODAL_INNER }}>
-                      <Image source={{ uri: selectedBuilding.floorPlan }} style={{ width: VISITOR_MODAL_INNER, height: 180, borderRadius: 12 }} resizeMode="contain" />
+                    <View style={{ width: VISITOR_MODAL_INNER, height: 180, alignSelf: 'center' }}>
+                      <Image source={{ uri: selectedBuilding.floorPlan }} style={{ width: '100%', height: '100%', borderRadius: 12 }} resizeMode="contain" />
+                      <View style={{ position: 'absolute', left: 0, top: 0, right: 0, bottom: 0 }} pointerEvents="none">
+                        <Svg width="100%" height="100%" viewBox={`0 0 ${VISITOR_MODAL_INNER} 180`} preserveAspectRatio="xMidYMid slice">
+                          {(() => {
+                            const meta = selectedBuilding?.roomPolygons || ROOM_POLYGONS[selectedBuilding?.id] || {};
+                            const entries = Object.entries(meta || {});
+                            if (!entries.length) return null;
+                            return entries.map(([name, poly], idx) => {
+                              if (!poly || !poly.length) return null;
+                              const pts = poly.map((p) => `${Math.round(p.x * VISITOR_MODAL_INNER)},${Math.round(p.y * 180)}`).join(' ');
+                              const cx = (poly.reduce((s, p) => s + p.x, 0) / poly.length) * VISITOR_MODAL_INNER;
+                              const cy = (poly.reduce((s, p) => s + p.y, 0) / poly.length) * 180;
+                              const isActive = selectedRoom === name;
+
+                              // compute pixel bbox to detect very small rooms and render a marker
+                              const xs = poly.map((p) => p.x * VISITOR_MODAL_INNER);
+                              const ys = poly.map((p) => p.y * 180);
+                              const minX = Math.min(...xs); const maxX = Math.max(...xs);
+                              const minY = Math.min(...ys); const maxY = Math.max(...ys);
+                              const wPx = Math.max(0, maxX - minX); const hPx = Math.max(0, maxY - minY);
+                              const isTiny = Math.min(wPx, hPx) < 28; // threshold in px
+
+                              const polyFill = isActive ? "rgba(30,200,80,0.45)" : (isTiny ? "rgba(30,200,30,0.22)" : "rgba(30,200,30,0.12)");
+                              const polyStroke = isActive ? darken('#1faa59', 0.12) : 'rgba(0,0,0,0.08)';
+                              const strokeW = isActive ? 2.5 : (isTiny ? 1.8 : 1);
+
+                              return (
+                                <G key={`${selectedBuilding?.id}-${name}-${idx}`}>
+                                  <Polygon points={pts} fill={polyFill} stroke={polyStroke} strokeWidth={strokeW} />
+                                  {isTiny ? (
+                                    // draw a clear circle marker at centroid for tiny rooms
+                                    <G>
+                                      <Circle cx={cx} cy={cy} r={isActive ? 10 : 8} fill={isActive ? 'rgba(31,150,70,0.95)' : 'rgba(255,255,255,0.9)'} stroke={isActive ? darken('#1faa59', 0.18) : 'rgba(0,0,0,0.12)'} strokeWidth={isActive ? 2 : 1} />
+                                      <Circle cx={cx} cy={cy} r={isActive ? 5 : 4} fill={isActive ? '#fff' : '#1faa59'} opacity={isActive ? 0.14 : 0.85} />
+                                    </G>
+                                  ) : null}
+                                </G>
+                              );
+                            });
+                          })()}
+                        </Svg>
+                      </View>
                     </View>
                   ) : null}
                 </ScrollView>
               ) : (
                 <Text style={{ textAlign: 'center', marginTop: 20 }}>No exterior photo or floor plan uploaded.</Text>
               )}
+
+              {/* Rooms selection section (replaces previous "Quick actions") */}
+              <View style={{ marginTop: 16 }}>
+                <Text style={{ fontSize: 16, fontWeight: '700', marginBottom: 8 }}>Select a Room</Text>
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
+                  {([...(selectedBuilding?.rooms || []), ...(selectedBuilding?.roomPolygons ? Object.keys(selectedBuilding.roomPolygons) : [])].filter(Boolean).reduce((acc, r) => { if (!acc.includes(r)) acc.push(r); return acc; }, [])).map((room, i) => {
+                    const active = selectedRoom === room;
+                    return (
+                      <TouchableOpacity
+                        key={i}
+                        style={[styles.roomChip, active ? { backgroundColor: '#dbffe3', borderWidth: 1, borderColor: '#1faa59' } : {}]}
+                        onPress={() => setSelectedRoom(active ? null : room)}
+                      >
+                        <Text style={{ color: '#333' }}>{room}</Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+
+                {/* Action buttons intentionally removed */}
+              </View>
             </View>
 
             <TouchableOpacity style={styles.closeBtn} onPress={() => setFloorPlanModalVisible(false)}>
