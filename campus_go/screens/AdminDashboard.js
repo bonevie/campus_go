@@ -42,6 +42,7 @@ export default function AdminDashboard() {
   // building fields
   const [newName, setNewName] = useState("");
   const [newDept, setNewDept] = useState("");
+  const [newStatus, setNewStatus] = useState("open");
   const [newRooms, setNewRooms] = useState("");
   const [newSteps, setNewSteps] = useState("");
   const [newX, setNewX] = useState("");
@@ -149,6 +150,7 @@ export default function AdminDashboard() {
     setFloorPlan(null);
     setPhoto(null);
     setNewType("general");
+    setNewStatus("open");
     setNewColor("#1faa59");
     setGateIcon(null);
     setGateIsPrimary(false);
@@ -172,6 +174,7 @@ export default function AdminDashboard() {
     setFloorPlan(item.floorPlan || null);
     setPhoto(item.photo || null);
     setNewType(item.type || "general");
+    setNewStatus(item.status || "open");
     setNewColor(item.color || "#1faa59");
     setGateIcon(item.gateIcon || null);
     setGateIsPrimary(!!item.isMainGate);
@@ -242,6 +245,7 @@ export default function AdminDashboard() {
           kind: "building",
           name: newName.trim(),
           department: newDept.trim(),
+          status: newStatus || 'open',
           rooms: newRooms ? newRooms.split(",").map((r) => r.trim()) : [],
           stepsFromMainGate: safeNum(newSteps),
           x: defaultX,
@@ -295,6 +299,21 @@ export default function AdminDashboard() {
     }
 
     setBuildings(updated);
+    // if status changed for an existing building, notify saved push tokens
+    try {
+      if (editingId !== null) {
+        const before = (buildings || []).find((b) => b.id === editingId) || {};
+        const after = (updated || []).find((b) => b.id === newId) || {};
+        if (before.status !== after.status) {
+          const title = `${after.name || 'Building'} status changed`;
+          const body = `${after.name || 'Building'} is now: ${after.status || 'updated'}`;
+          const data = { buildingId: after.id, buildingName: after.name, openMap: true, status: after.status };
+          await sendPushToSavedTokens(title, body, data);
+        }
+      }
+    } catch (e) {
+      console.log('Push notify error', e);
+    }
     // ensure AsyncStorage write completes before closing modal so other screens
     // that read from storage (or a storage-first loader) see the latest data
     await saveToStorage(updated);
@@ -308,6 +327,33 @@ export default function AdminDashboard() {
       console.log("SAVE CONFIRM ERROR", e);
     }
     setModalVisible(false);
+  };
+
+  // read saved push tokens and send Expo push messages
+  const sendPushToSavedTokens = async (title, body, data = null) => {
+    try {
+      const stored = await AsyncStorage.getItem('pushTokens');
+      const list = stored ? JSON.parse(stored) : [];
+      if (!list || !list.length) return;
+      // Expo push URL
+      const messages = list.map((token) => ({ to: token, sound: 'default', title, body, data }));
+      // send in small batches
+      const batchSize = 50;
+      for (let i = 0; i < messages.length; i += batchSize) {
+        const chunk = messages.slice(i, i + batchSize);
+        try {
+          await fetch('https://exp.host/--/api/v2/push/send', {
+            method: 'POST',
+            headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+            body: JSON.stringify(chunk),
+          });
+        } catch (e) {
+          console.log('Expo push send error', e);
+        }
+      }
+    } catch (e) {
+      console.log('sendPushToSavedTokens error', e);
+    }
   };
 
   const deleteItem = (id) => {
@@ -343,6 +389,16 @@ export default function AdminDashboard() {
     </View>
   );
 
+  const StatusChooser = () => (
+    <View style={{ flexDirection: 'row', marginBottom: 8, gap: 8 }}>
+      {['open', 'closed', 'maintenance', 'restricted'].map((s) => (
+        <TouchableOpacity key={s} onPress={() => setNewStatus(s)} style={[styles.typeBtn, newStatus === s ? { backgroundColor: '#333' } : { backgroundColor: '#eee' }]}>
+          <Text style={{ color: newStatus === s ? '#fff' : '#333', fontWeight: '700' }}>{s}</Text>
+        </TouchableOpacity>
+      ))}
+    </View>
+  );
+
   const ColorChooser = () => (
     <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 10 }}>
       {COLOR_PRESETS.map((c) => (
@@ -362,6 +418,49 @@ export default function AdminDashboard() {
   );
 
   const allItems = buildings || [];
+  const [activeTab, setActiveTab] = useState('items'); // 'items' | 'users'
+  const [usersList, setUsersList] = useState([]);
+
+  // load users for the Admin Users view
+  useEffect(() => {
+    const loadUsers = async () => {
+      try {
+        const stored = await AsyncStorage.getItem('users');
+        const parsed = stored ? JSON.parse(stored) : [];
+        setUsersList(parsed);
+      } catch (e) {
+        console.log('LOAD USERS ERROR', e);
+      }
+    };
+    loadUsers();
+  }, []);
+
+  const deleteUserAccount = (user) => {
+    Alert.alert(
+      'Delete account?',
+      `Delete account for ${user.fullName || user.email}? This cannot be undone.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const stored = await AsyncStorage.getItem('users');
+              const list = stored ? JSON.parse(stored) : [];
+              const filtered = list.filter((u) => u.email !== user.email && u.idNumber !== user.idNumber);
+              await AsyncStorage.setItem('users', JSON.stringify(filtered));
+              setUsersList(filtered);
+              Alert.alert('Deleted', `${user.fullName || user.email} has been removed.`);
+            } catch (e) {
+              console.log('DELETE USER ERROR', e);
+              Alert.alert('Error', 'Unable to delete user.');
+            }
+          },
+        },
+      ]
+    );
+  };
 
   return (
     <SafeAreaView style={styles.container}>
@@ -397,7 +496,7 @@ export default function AdminDashboard() {
         </ScrollView>
 
         <View style={styles.buildingList}>
-          {allItems.map((it) => (
+          {activeTab === 'items' && allItems.map((it) => (
             <View key={it.id} style={styles.itemCard}>
               <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
                 <View style={{ flexDirection: "row", gap: 12, alignItems: "center" }}>
@@ -446,6 +545,55 @@ export default function AdminDashboard() {
               )}
             </View>
           ))}
+
+          {activeTab === 'users' && (
+            <View>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                <Text style={{ fontSize: 18, fontWeight: '700' }}>Signed-up Users</Text>
+                <TouchableOpacity onPress={async () => { const stored = await AsyncStorage.getItem('users'); setUsersList(stored ? JSON.parse(stored) : []); }} style={{ padding: 8 }}>
+                  <Text style={{ color: '#2a9efe' }}>Refresh</Text>
+                </TouchableOpacity>
+              </View>
+
+              <Text style={{ fontWeight: '700', marginTop: 8 }}>Students</Text>
+              {(usersList || []).filter(u => (u.role || '').toLowerCase() === 'student').map((u, i) => (
+                <View key={`s-${i}`} style={[styles.itemCard, { backgroundColor: '#fff' }]}>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <View>
+                      <Text style={styles.itemTitle}>{u.fullName || u.email}</Text>
+                      <Text style={styles.itemSub}>{u.idNumber || ''} • {u.email}</Text>
+                    </View>
+                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                      <TouchableOpacity onPress={() => deleteUserAccount(u)} style={[styles.iconBtn, { marginLeft: 8 }]}>
+                        <Ionicons name="trash-outline" size={20} color="red" />
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                </View>
+              ))}
+
+              <Text style={{ fontWeight: '700', marginTop: 12 }}>Faculty</Text>
+              {(usersList || []).filter(u => (u.role || '').toLowerCase() === 'faculty').map((u, i) => (
+                <View key={`f-${i}`} style={[styles.itemCard, { backgroundColor: '#fff' }]}>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <View>
+                      <Text style={styles.itemTitle}>{u.fullName || u.email}</Text>
+                      <Text style={styles.itemSub}>{u.idNumber || ''} • {u.email}</Text>
+                    </View>
+                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                      <TouchableOpacity onPress={() => deleteUserAccount(u)} style={[styles.iconBtn, { marginLeft: 8 }]}>
+                        <Ionicons name="trash-outline" size={20} color="red" />
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                </View>
+              ))}
+
+              {(usersList || []).length === 0 && (
+                <Text style={{ color: '#666', marginTop: 8 }}>No users registered yet.</Text>
+              )}
+            </View>
+          )}
         </View>
       </ScrollView>
 
@@ -472,6 +620,11 @@ export default function AdminDashboard() {
                     <View style={{ flexDirection: "row" }}>
                       <TypeChooser />
                     </View>
+                  </View>
+
+                  <View style={{ marginVertical: 8 }}>
+                    <Text style={{ fontWeight: "700", marginBottom: 6 }}>Status</Text>
+                    <StatusChooser />
                   </View>
 
                   <View style={{ marginBottom: 10 }}>
@@ -688,12 +841,17 @@ export default function AdminDashboard() {
       </Modal>
 
       <View style={styles.bottomBar}>
-        <TouchableOpacity style={styles.bottomItem}>
-          <Ionicons name="business" size={22} color="#6a11cb" />
-          <Text style={styles.bottomLabel}>Items</Text>
+        <TouchableOpacity style={[styles.bottomItem, activeTab === 'items' ? styles.bottomItemActive : null]} onPress={() => setActiveTab('items')}>
+          <Ionicons name="business" size={22} color={activeTab === 'items' ? '#6a11cb' : '#444'} />
+          <Text style={[styles.bottomLabel, activeTab === 'items' ? styles.bottomLabelActive : null]}>Items</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.bottomItem} onPress={() => navigation.replace("Login")}>
+        <TouchableOpacity style={[styles.bottomItem, activeTab === 'users' ? styles.bottomItemActive : null]} onPress={() => setActiveTab('users')}>
+          <Ionicons name="people" size={22} color={activeTab === 'users' ? '#6a11cb' : '#444'} />
+          <Text style={[styles.bottomLabel, activeTab === 'users' ? styles.bottomLabelActive : null]}>Users</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity style={styles.bottomItem} onPress={() => navigation.replace("Login") }>
           <Ionicons name="log-out-outline" size={22} color="#444" />
           <Text style={styles.bottomLabel}>Logout</Text>
         </TouchableOpacity>
@@ -737,7 +895,9 @@ const styles = StyleSheet.create({
   modalSolidBackdrop: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#2e7d32' },
   doneBtn: { backgroundColor: '#2e7d32', padding: 12, borderRadius: 8, alignItems: 'center' },
   doneBtnText: { color: '#fff', fontSize: 16 },
-  bottomBar: { flexDirection: "row", justifyContent: "space-around", alignItems: "center", paddingVertical: 12, backgroundColor: "#fff", borderTopWidth: 1, borderColor: "#ddd" },
-  bottomItem: { alignItems: "center" },
-  bottomLabel: { fontSize: 12, color: "#444", marginTop: 3 },
+  bottomBar: { flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center', paddingVertical: 12, backgroundColor: '#fff', borderTopWidth: 1, borderColor: '#ddd' },
+  bottomItem: { alignItems: 'center', justifyContent: 'center' },
+  bottomItemActive: {},
+  bottomLabel: { fontSize: 12, color: '#444', marginTop: 4 },
+  bottomLabelActive: { color: '#6a11cb', fontWeight: '700' },
 });

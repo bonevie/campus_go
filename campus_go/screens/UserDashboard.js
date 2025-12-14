@@ -1,5 +1,5 @@
 // UserDashboard.js
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useContext } from "react";
 import {
   View,
   Text,
@@ -20,6 +20,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import VisitorMap from "./VisitorMap";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { BuildingsContext } from "./BuildingsContext";
 
 /**
  * UserDashboard
@@ -112,6 +113,10 @@ export default function UserDashboard({ navigation, route }) {
 const saveSchedule = async (data) => {
   try {
     await AsyncStorage.setItem(`userSchedule_${user.idNumber}`, JSON.stringify(data));
+    try {
+      // schedule local reminders for this user's classes
+      await scheduleUserReminders(user.idNumber, data);
+    } catch (e) {}
   } catch (e) {
     console.log("Failed to save schedule", e);
   }
@@ -134,6 +139,60 @@ const loadSchedule = async () => {
   useEffect(() => {
     loadSchedule();
   }, []);
+
+  // notification state and listeners (display incoming push notifications in dashboard)
+  const [alerts, setAlerts] = useState([]);
+  const notificationListenerRef = useRef(null);
+  const responseListenerRef = useRef(null);
+
+  // initialize foreground notification listeners if user has notifications permission
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const saved = await AsyncStorage.getItem('permissions');
+        const perms = saved ? JSON.parse(saved) : null;
+        const allow = perms && (perms.notifications === true || perms.notifications === 'true');
+        if (!allow) return;
+
+        const Notifications = require('expo-notifications');
+        notificationListenerRef.current = Notifications.addNotificationReceivedListener((notif) => {
+          const c = notif.request.content || {};
+          const a = { id: Date.now(), title: c.title || 'Notification', body: c.body || '', data: c.data || {} };
+          if (mounted) setAlerts((prev) => [a, ...prev]);
+        });
+
+        responseListenerRef.current = Notifications.addNotificationResponseReceivedListener((resp) => {
+          const c = (resp && resp.notification && resp.notification.request && resp.notification.request.content) || {};
+          const a = { id: Date.now(), title: c.title || 'Notification', body: c.body || '', data: c.data || {} };
+          if (mounted) setAlerts((prev) => [a, ...prev]);
+          if (c.data && c.data.openMap) {
+            // focus map on building if provided
+            const b = c.data.buildingName || c.data.buildingId || null;
+            if (b) setMapFocus({ building: b });
+            setActiveTab('map');
+          }
+        });
+      } catch (e) {
+        // ignore
+      }
+    })();
+    return () => {
+      mounted = false;
+      try {
+        const Notifications = require('expo-notifications');
+        if (notificationListenerRef.current) Notifications.removeNotificationSubscription(notificationListenerRef.current);
+        if (responseListenerRef.current) Notifications.removeNotificationSubscription(responseListenerRef.current);
+      } catch (e) {}
+    };
+  }, []);
+
+  // auto-expire alerts after 12s
+  useEffect(() => {
+    if (!alerts || alerts.length === 0) return;
+    const timers = alerts.map((a) => setTimeout(() => setAlerts((prev) => prev.filter((x) => x.id !== a.id)), 12000));
+    return () => timers.forEach((t) => clearTimeout(t));
+  }, [alerts]);
 
   const addClass = () => {
     if (!form.subject.trim()) return;
@@ -241,6 +300,92 @@ const sortScheduleArray = (arr) => {
     const tb = parseStartHour(b.time);
     return ta - tb;
   });
+};
+
+// Helpers: schedule and cancel weekly reminders for user's classes
+const WEEKDAY_EXPO = { Sunday: 1, Monday: 2, Tuesday: 3, Wednesday: 4, Thursday: 5, Friday: 6, Saturday: 7 };
+
+const parseStartParts = (t) => {
+  try {
+    const part = (t || "").split(" - ")[0] || "";
+    const m = part.match(/(\d{1,2}):(\d{2})\s*(AM|PM)/i);
+    if (!m) return null;
+    let h = Number(m[1]);
+    const min = Number(m[2]);
+    const ap = m[3].toUpperCase();
+    if (ap === "PM" && h !== 12) h += 12;
+    if (ap === "AM" && h === 12) h = 0;
+    return { hour: h, minute: min };
+  } catch (e) {
+    return null;
+  }
+};
+
+const scheduleUserReminders = async (userId, sched) => {
+  try {
+    const Notifications = require('expo-notifications');
+    const perm = await Notifications.getPermissionsAsync?.();
+    let status = perm && perm.status;
+    if (status !== 'granted') {
+      const req = await Notifications.requestPermissionsAsync?.();
+      status = req && req.status;
+      if (status !== 'granted') return;
+    }
+
+    // cancel any existing scheduled notifications for this user
+    try {
+      const existingStr = await AsyncStorage.getItem(`userNotifIds_${userId}`);
+      const existing = existingStr ? JSON.parse(existingStr) : [];
+      for (const id of existing) {
+        try { await Notifications.cancelScheduledNotificationAsync(id); } catch (e) {}
+      }
+    } catch (e) {}
+
+    const newIds = [];
+    // read user's preferred lead time (per-user or global fallback)
+    let advanceMins = 10;
+    try {
+      const per = await AsyncStorage.getItem(`reminderLead_${userId}`);
+      if (per) advanceMins = Number(per) || advanceMins;
+      else {
+        const g = await AsyncStorage.getItem('reminderLeadMins');
+        if (g) advanceMins = Number(g) || advanceMins;
+      }
+    } catch (e) {}
+
+    for (const cls of (sched || [])) {
+      try {
+        if (!cls || !cls.time || !cls.day) continue;
+        const parts = parseStartParts(cls.time);
+        if (!parts) continue;
+        const startTotal = parts.hour * 60 + parts.minute;
+        const targetTotal = startTotal - advanceMins;
+        let dayOffset = 0;
+        let adjusted = targetTotal;
+        if (targetTotal < 0) { adjusted = targetTotal + 24 * 60; dayOffset = -1; }
+        else if (targetTotal >= 24 * 60) { adjusted = targetTotal - 24 * 60; dayOffset = 1; }
+        const targetHour = Math.floor(adjusted / 60);
+        const targetMinute = adjusted % 60;
+        let expoWeekday = WEEKDAY_EXPO[cls.day];
+        if (!expoWeekday) continue;
+        expoWeekday = ((expoWeekday - 1 + dayOffset + 7) % 7) + 1; // wrap 1..7
+
+        const contentTitle = cls.subject ? `Upcoming: ${cls.subject}` : `Upcoming class`;
+        const contentBody = `${cls.subject || ''} at ${cls.time || ''}${cls.building ? ' • ' + cls.building : ''}${cls.room ? ' • ' + cls.room : ''}`.trim();
+
+        const id = await Notifications.scheduleNotificationAsync({
+          content: { title: contentTitle, body: contentBody, data: { type: 'schedule', classId: cls.id } },
+          trigger: { weekday: expoWeekday, hour: targetHour, minute: targetMinute, repeats: true },
+        });
+        if (id) newIds.push(id);
+      } catch (e) {
+        // ignore per-class scheduling errors
+      }
+    }
+    try { await AsyncStorage.setItem(`userNotifIds_${userId}`, JSON.stringify(newIds)); } catch (e) {}
+  } catch (e) {
+    console.log('scheduleUserReminders error', e);
+  }
 };
 
 // Return ordered days: days with classes ordered by earliest start, then remaining weekdays
@@ -363,6 +508,23 @@ const getOrderedDays = (sched) => {
                   {user.role} • {user.idNumber}
                 </Text>
               </View>
+              
+              {/* Notifications banner (incoming push alerts) */}
+              {alerts && alerts.length > 0 ? (
+                <View style={{ marginTop: 12, marginHorizontal: 16 }}>
+                  {alerts.map((a) => (
+                    <TouchableOpacity key={a.id} style={{ backgroundColor: '#fff8e6', padding: 10, borderRadius: 10, marginBottom: 8, flexDirection: 'row', alignItems: 'center', elevation: 2 }} onPress={() => { setActiveTab('home'); /* optional: show details */ }}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={{ fontWeight: '700' }}>{a.title}</Text>
+                        <Text style={{ color: '#333' }}>{a.body}</Text>
+                      </View>
+                      <TouchableOpacity onPress={() => setAlerts((prev) => prev.filter((x) => x.id !== a.id))} style={{ paddingHorizontal: 8 }}>
+                        <Text style={{ color: '#666' }}>Dismiss</Text>
+                      </TouchableOpacity>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              ) : null}
             </View>
 
             {/* Quick Actions */}
@@ -1315,4 +1477,5 @@ const styles = StyleSheet.create({
   },
   addClassBtnText: { color: "white", fontWeight: "700" },
   modalClose: { position: "absolute", top: 10, right: 10 },
+  alertCard: { backgroundColor: '#fff8e6', padding: 10, borderRadius: 10, marginBottom: 8, flexDirection: 'row', alignItems: 'center', elevation: 2 },
 });

@@ -14,6 +14,7 @@ import {
   PanResponder,
   Image,
   Easing,
+  Alert,
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Ionicons } from "@expo/vector-icons";
@@ -83,6 +84,39 @@ function VisitorMapInner({ navigation, route, focus, onFocusHandled }) {
   const [selectedBuilding, setSelectedBuilding] = useState(null);
   const [selectedRoom, setSelectedRoom] = useState(null);
   const [localBuildings, setLocalBuildings] = useState([]);
+
+  // alerts for sudden building changes (e.g., closed, maintenance, restricted)
+  const [alerts, setAlerts] = useState([]);
+  const prevBuildingsRef = useRef([]);
+
+  // detect building-level status changes and queue lightweight in-app alerts
+  useEffect(() => {
+    try {
+      const prev = prevBuildingsRef.current || [];
+      const added = [];
+      (buildings || []).forEach((b) => {
+        const old = prev.find((p) => p.id === b.id);
+        if (old && old.status !== b.status) {
+          const newStatus = b.status || "updated";
+          added.push({ id: b.id, title: b.name || "Building", message: `${b.name || 'Building'} status: ${newStatus}`, building: b });
+        }
+      });
+      if (added.length) setAlerts((s) => [...added, ...s]);
+      // store a shallow copy for next comparison
+      prevBuildingsRef.current = (buildings || []).map((x) => ({ ...x }));
+    } catch (e) {
+      // ignore detection errors
+    }
+  }, [buildings]);
+
+  // auto-expire alerts after N seconds
+  useEffect(() => {
+    if (!alerts || alerts.length === 0) return;
+    const timers = alerts.map((a) => setTimeout(() => setAlerts((prev) => prev.filter((x) => x !== a)), 12000));
+    return () => timers.forEach((t) => clearTimeout(t));
+  }, [alerts]);
+
+  
 
   // Floor plan modal visible state (we use this for list -> floor plan modal)
   const [floorPlanModalVisible, setFloorPlanModalVisible] = useState(false);
@@ -1411,8 +1445,38 @@ function VisitorMapInner({ navigation, route, focus, onFocusHandled }) {
           </View>
         </View>
         <Text style={styles.headerSubtitle}>Tap building to open details</Text>
-        <View style={styles.searchBar}><Ionicons name="search" size={18} color="#666" /><TextInput placeholder="Search buildings, rooms, dept…" style={styles.searchInput} value={search} onChangeText={setSearch} onSubmitEditing={(e) => handleSearchSubmit(e.nativeEvent.text)} returnKeyType="search" /></View>
+        <View style={styles.searchBar}><Ionicons name="search" size={18} color="#666" /><TextInput placeholder="Search buildings…" style={styles.searchInput} value={search} onChangeText={setSearch} onSubmitEditing={(e) => handleSearchSubmit(e.nativeEvent.text)} returnKeyType="search" /></View>
       </View>
+
+      {/* Alerts for sudden building changes (tap to view) */}
+      {alerts && alerts.length > 0 ? (
+        <View style={{ position: 'absolute', top: 90, left: 20, right: 20, zIndex: 999 }} pointerEvents="box-none">
+          {alerts.map((a, i) => (
+            <TouchableOpacity
+              key={`${a.id}-${i}`}
+              style={{ backgroundColor: '#fff4e6', padding: 10, borderRadius: 10, marginBottom: 8, flexDirection: 'row', alignItems: 'center', elevation: 6 }}
+              onPress={() => {
+                try {
+                  if (a.building) {
+                    centerOnBuilding(a.building);
+                    setSelectedBuilding(a.building);
+                    setFloorPlanModalVisible(true);
+                  }
+                } catch (e) {}
+                setAlerts((prev) => prev.filter((x) => x !== a));
+              }}
+            >
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontWeight: '700' }}>{a.title}</Text>
+                <Text style={{ color: '#333' }}>{a.message}</Text>
+              </View>
+              <TouchableOpacity onPress={() => setAlerts((prev) => prev.filter((x) => x !== a))} style={{ paddingHorizontal: 8 }}>
+                <Text style={{ color: '#666' }}>Dismiss</Text>
+              </TouchableOpacity>
+            </TouchableOpacity>
+          ))}
+        </View>
+      ) : null}
 
       <ScrollView
   ref={scrollViewRef}
@@ -1566,23 +1630,76 @@ function VisitorMapInner({ navigation, route, focus, onFocusHandled }) {
                     }
 
                     if (b.kind === 'court') {
-                      // stylized court: rounded rectangle with center line and small hoops/markers
+                      // support multiple court visuals: basketball (default), soccer, baseball
+                      const type = (b.courtType || '').toLowerCase();
                       const courtColor = b.color || '#d9b382';
-                      const w = 36;
-                      const h = 22;
+                      const w = 44;
+                      const h = 28;
                       const left = bx - w / 2;
                       const top = by - h / 2;
+
+                      // Soccer field: green rectangle with center circle and goal marks
+                      if (type === 'soccer' || type === 'football') {
+                        const fieldGreen = b.color || '#1faa59';
+                        const lineColor = '#ffffff';
+                        const centerR = 6;
+                        return (
+                          <G key={`court-soccer-${b.id}`} onPressIn={() => startLongPress(b)} onPressOut={() => endLongPress(b)} onPress={() => { setSelectedBuilding(b); }}>
+                            <Rect x={left} y={top} width={w} height={h} rx={3} fill={fieldGreen} stroke={darken(fieldGreen, 0.12)} strokeWidth={1.4} />
+                            {/* halfway line */}
+                            <Path d={`M ${bx},${top + 4} L ${bx},${top + h - 4}`} stroke={lineColor} strokeWidth={1.8} strokeLinecap="round" opacity={0.95} />
+                            {/* center circle */}
+                            <Circle cx={bx} cy={by} r={centerR} fill="none" stroke={lineColor} strokeWidth={1.6} />
+                            {/* small goal markers */}
+                            <Path d={`M ${left + 2},${by - 6} L ${left + 2},${by + 6}`} stroke={lineColor} strokeWidth={1.2} />
+                            <Path d={`M ${left + w - 2},${by - 6} L ${left + w - 2},${by + 6}`} stroke={lineColor} strokeWidth={1.2} />
+                          </G>
+                        );
+                      }
+
+                      // Baseball diamond: rotated square (diamond) with infield dirt and base markers
+                      if (type === 'baseball' || type === 'diamond') {
+                        const grass = b.color || '#6fcf73';
+                        const dirt = '#d99a5a';
+                        const cx = bx;
+                        const cy = by;
+                        const size = Math.min(w, h) * 0.7;
+                        const half = size / 2;
+                        // diamond points (rotated square)
+                        const pTop = `${cx},${cy - half}`;
+                        const pRight = `${cx + half},${cy}`;
+                        const pBottom = `${cx},${cy + half}`;
+                        const pLeft = `${cx - half},${cy}`;
+                        return (
+                          <G key={`court-baseball-${b.id}`} onPressIn={() => startLongPress(b)} onPressOut={() => endLongPress(b)} onPress={() => { setSelectedBuilding(b); }}>
+                            {/* background grass */}
+                            <Rect x={left - 6} y={top - 6} width={w + 12} height={h + 12} rx={4} fill={grass} stroke={darken(grass, 0.1)} strokeWidth={1.2} />
+                            {/* infield dirt as rotated square/diamond */}
+                            <Polygon points={`${pTop} ${pRight} ${pBottom} ${pLeft}`} fill={dirt} stroke={darken(dirt, 0.12)} strokeWidth={1.2} />
+                            {/* pitcher's mound */}
+                            <Circle cx={cx} cy={cy} r={3} fill={darken(dirt, 0.06)} />
+                            {/* bases (small white squares) */}
+                            <Rect x={cx - 4} y={cy - half - 4} width={8} height={8} rx={1} fill="#fff" stroke="#eee" />
+                            <Rect x={cx + half - 4} y={cy - 4} width={8} height={8} rx={1} fill="#fff" stroke="#eee" />
+                            <Rect x={cx - 4} y={cy + half - 4} width={8} height={8} rx={1} fill="#fff" stroke="#eee" />
+                            <Rect x={cx - half - 4} y={cy - 4} width={8} height={8} rx={1} fill="#fff" stroke="#eee" />
+                          </G>
+                        );
+                      }
+
+                      // default: basketball-like rounded rectangle with center line and markers
                       const centerX = bx;
                       const centerY = by;
+                      const backColor = courtColor;
                       return (
                         <G key={`court-${b.id}`} onPressIn={() => startLongPress(b)} onPressOut={() => endLongPress(b)} onPress={() => { setSelectedBuilding(b); }}>
-                          <Rect x={left} y={top} width={w} height={h} rx={3} fill={courtColor} stroke={darken(courtColor, 0.15)} strokeWidth={1.5} />
-                          {/* center line - pixelated */}
-                          <Path d={`M ${centerX},${top + 4} L ${centerX},${top + h - 4}`} stroke={darken(courtColor, 0.6)} strokeWidth={2.0} strokeLinecap="square" />
-                          {/* left hoop marker - pixelated */}
-                          <Path d={`M ${left + 6},${centerY - 4} L ${left + 6},${centerY + 4}`} stroke={darken(courtColor, 0.6)} strokeWidth={1.8} />
-                          {/* right hoop marker - pixelated */}
-                          <Path d={`M ${left + w - 6},${centerY - 4} L ${left + w - 6},${centerY + 4}`} stroke={darken(courtColor, 0.6)} strokeWidth={1.8} />
+                          <Rect x={left} y={top} width={w} height={h} rx={3} fill={backColor} stroke={darken(backColor, 0.15)} strokeWidth={1.5} />
+                          {/* center line */}
+                          <Path d={`M ${centerX},${top + 4} L ${centerX},${top + h - 4}`} stroke={darken(backColor, 0.6)} strokeWidth={2.0} strokeLinecap="square" />
+                          {/* left marker */}
+                          <Path d={`M ${left + 7},${centerY - 4} L ${left + 7},${centerY + 4}`} stroke={darken(backColor, 0.6)} strokeWidth={1.8} />
+                          {/* right marker */}
+                          <Path d={`M ${left + w - 7},${centerY - 4} L ${left + w - 7},${centerY + 4}`} stroke={darken(backColor, 0.6)} strokeWidth={1.8} />
                         </G>
                       );
                     }

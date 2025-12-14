@@ -26,6 +26,7 @@ export default function PrivacySecurity({ navigation }) {
     location: false,
     sync: true,
   });
+  const [reminderLead, setReminderLead] = useState(10);
 
   // 🔵 Load logged user
   useEffect(() => {
@@ -56,6 +57,15 @@ export default function PrivacySecurity({ navigation }) {
         };
 
         setPermissions(fixed);
+        // load reminder lead time (per-user or global)
+        try {
+          const logged = await AsyncStorage.getItem('loggedUser');
+          const lu = logged ? JSON.parse(logged) : null;
+          const per = lu && lu.idNumber ? await AsyncStorage.getItem(`reminderLead_${lu.idNumber}`) : null;
+          const glob = await AsyncStorage.getItem('reminderLeadMins');
+          const val = per ? Number(per) : glob ? Number(glob) : 10;
+          setReminderLead(Number(val || 10));
+        } catch (e) {}
       }
     };
     loadPermissions();
@@ -66,7 +76,74 @@ export default function PrivacySecurity({ navigation }) {
     const updated = { ...permissions, [key]: value };
     setPermissions(updated);
     await AsyncStorage.setItem("permissions", JSON.stringify(updated));
+
+    // If notifications permission toggled, register/unregister push token
+    if (key === 'notifications') {
+      try {
+        if (value) await registerForPush();
+        else await unregisterForPush();
+      } catch (e) {}
+    }
   };
+
+  const updateReminderLead = async (mins) => {
+    try {
+      setReminderLead(mins);
+      const logged = await AsyncStorage.getItem('loggedUser');
+      const lu = logged ? JSON.parse(logged) : null;
+      if (lu && lu.idNumber) await AsyncStorage.setItem(`reminderLead_${lu.idNumber}`, String(mins));
+      // also save global default for fallback
+      await AsyncStorage.setItem('reminderLeadMins', String(mins));
+    } catch (e) {}
+  };
+
+  // Register for Expo push token and save to shared pushTokens list
+  const registerForPush = async () => {
+    try {
+      const Notifications = require('expo-notifications');
+      const { status: existingStatus } = await Notifications.getPermissionsAsync?.();
+      let finalStatus = existingStatus;
+      if (existingStatus !== 'granted') {
+        const { status } = await Notifications.requestPermissionsAsync?.();
+        finalStatus = status;
+      }
+      if (finalStatus === 'granted') {
+        const tokenObj = await Notifications.getExpoPushTokenAsync?.();
+        const token = tokenObj && tokenObj.data ? tokenObj.data : tokenObj;
+        if (token) {
+          try {
+            await AsyncStorage.setItem('pushToken', token);
+            const stored = await AsyncStorage.getItem('pushTokens');
+            const list = stored ? JSON.parse(stored) : [];
+            if (!list.includes(token)) {
+              list.push(token);
+              await AsyncStorage.setItem('pushTokens', JSON.stringify(list));
+            }
+          } catch (e) {}
+        }
+      }
+    } catch (e) {
+      // ignore
+    }
+  };
+
+  // Unregister push: remove saved token from pushTokens and clear pushToken
+  const unregisterForPush = async () => {
+    try {
+      const token = await AsyncStorage.getItem('pushToken');
+      if (token) {
+        const stored = await AsyncStorage.getItem('pushTokens');
+        const list = stored ? JSON.parse(stored) : [];
+        const filtered = list.filter((t) => t !== token);
+        await AsyncStorage.setItem('pushTokens', JSON.stringify(filtered));
+        await AsyncStorage.removeItem('pushToken');
+      }
+    } catch (e) {
+      // ignore
+    }
+  };
+
+  // Test reminder removed: scheduling helper removed to simplify UI.
 
   // 🔵 Change password
   const changePassword = async () => {
@@ -199,6 +276,20 @@ export default function PrivacySecurity({ navigation }) {
             />
           </View>
         ))}
+        {/* Reminder lead time */}
+        <View style={{ marginTop: 10 }}>
+          <Text style={styles.sectionTitle}>Reminder Lead Time</Text>
+          <Text style={{ color: '#666', marginBottom: 8 }}>Notify me this many minutes before a scheduled class.</Text>
+          <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+            {[5, 10, 15, 30].map((m) => (
+              <TouchableOpacity key={m} onPress={() => updateReminderLead(m)} style={{ padding: 10, backgroundColor: reminderLead === m ? '#167CF2' : 'white', borderRadius: 10, borderWidth: 1, borderColor: '#e5e5e5' }}>
+                <Text style={{ color: reminderLead === m ? 'white' : '#333', fontWeight: '700' }}>{m}m</Text>
+              </TouchableOpacity>
+            ))}
+
+            {/* Test Reminder removed */}
+          </View>
+        </View>
 
         {/* Danger Zone */}
         <Text style={styles.sectionTitle}>Danger Zone</Text>
