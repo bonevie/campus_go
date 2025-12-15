@@ -20,6 +20,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import VisitorMap from "./VisitorMap";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { scheduleUserReminders } from "../utils/notifications";
 import { BuildingsContext } from "./BuildingsContext";
 
 /**
@@ -321,72 +322,7 @@ const parseStartParts = (t) => {
   }
 };
 
-const scheduleUserReminders = async (userId, sched) => {
-  try {
-    const Notifications = require('expo-notifications');
-    const perm = await Notifications.getPermissionsAsync?.();
-    let status = perm && perm.status;
-    if (status !== 'granted') {
-      const req = await Notifications.requestPermissionsAsync?.();
-      status = req && req.status;
-      if (status !== 'granted') return;
-    }
-
-    // cancel any existing scheduled notifications for this user
-    try {
-      const existingStr = await AsyncStorage.getItem(`userNotifIds_${userId}`);
-      const existing = existingStr ? JSON.parse(existingStr) : [];
-      for (const id of existing) {
-        try { await Notifications.cancelScheduledNotificationAsync(id); } catch (e) {}
-      }
-    } catch (e) {}
-
-    const newIds = [];
-    // read user's preferred lead time (per-user or global fallback)
-    let advanceMins = 10;
-    try {
-      const per = await AsyncStorage.getItem(`reminderLead_${userId}`);
-      if (per) advanceMins = Number(per) || advanceMins;
-      else {
-        const g = await AsyncStorage.getItem('reminderLeadMins');
-        if (g) advanceMins = Number(g) || advanceMins;
-      }
-    } catch (e) {}
-
-    for (const cls of (sched || [])) {
-      try {
-        if (!cls || !cls.time || !cls.day) continue;
-        const parts = parseStartParts(cls.time);
-        if (!parts) continue;
-        const startTotal = parts.hour * 60 + parts.minute;
-        const targetTotal = startTotal - advanceMins;
-        let dayOffset = 0;
-        let adjusted = targetTotal;
-        if (targetTotal < 0) { adjusted = targetTotal + 24 * 60; dayOffset = -1; }
-        else if (targetTotal >= 24 * 60) { adjusted = targetTotal - 24 * 60; dayOffset = 1; }
-        const targetHour = Math.floor(adjusted / 60);
-        const targetMinute = adjusted % 60;
-        let expoWeekday = WEEKDAY_EXPO[cls.day];
-        if (!expoWeekday) continue;
-        expoWeekday = ((expoWeekday - 1 + dayOffset + 7) % 7) + 1; // wrap 1..7
-
-        const contentTitle = cls.subject ? `Upcoming: ${cls.subject}` : `Upcoming class`;
-        const contentBody = `${cls.subject || ''} at ${cls.time || ''}${cls.building ? ' • ' + cls.building : ''}${cls.room ? ' • ' + cls.room : ''}`.trim();
-
-        const id = await Notifications.scheduleNotificationAsync({
-          content: { title: contentTitle, body: contentBody, data: { type: 'schedule', classId: cls.id } },
-          trigger: { weekday: expoWeekday, hour: targetHour, minute: targetMinute, repeats: true },
-        });
-        if (id) newIds.push(id);
-      } catch (e) {
-        // ignore per-class scheduling errors
-      }
-    }
-    try { await AsyncStorage.setItem(`userNotifIds_${userId}`, JSON.stringify(newIds)); } catch (e) {}
-  } catch (e) {
-    console.log('scheduleUserReminders error', e);
-  }
-};
+// scheduleUserReminders is provided by ../utils/notifications
 
 // Return ordered days: days with classes ordered by earliest start, then remaining weekdays
 const getOrderedDays = (sched) => {

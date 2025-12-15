@@ -350,6 +350,39 @@ function VisitorMapInner({ navigation, route, focus, onFocusHandled }) {
     }
   };
 
+  // spiderfy state: when a cluster is tapped expand members radially
+  const [spiderfy, setSpiderfy] = useState(null);
+  const handleClusterTap = (entry) => {
+    try {
+      if (!entry || entry.type !== 'cluster') return;
+      const cx = Number(entry.x) || 0;
+      const cy = Number(entry.y) || 0;
+      if (spiderfy && spiderfy.center && spiderfy.center.x === cx && spiderfy.center.y === cy) {
+        setSpiderfy(null);
+        return;
+      }
+      const s = scaleValueRef.current || 1;
+      const px = getPanX();
+      const py = getPanY();
+      const screenCenterX = cx * s + px;
+      const screenCenterY = cy * s + py;
+      const members = entry.members || [];
+      const cnt = members.length || 0;
+      const R = Math.min(140, 28 + cnt * 12);
+      const positions = members.map((m, i) => {
+        const angle = (2 * Math.PI * i) / Math.max(1, members.length);
+        const sx = screenCenterX + R * Math.cos(angle);
+        const sy = screenCenterY + R * Math.sin(angle);
+        const mapX = (sx - px) / s;
+        const mapY = (sy - py) / s;
+        return { x: mapX, y: mapY, member: m };
+      });
+      setSpiderfy({ center: { x: cx, y: cy }, positions, entry });
+    } catch (e) {
+      // ignore
+    }
+  };
+
   const mapContainerRef = useRef(null);
   const [mapLayout, setMapLayout] = useState(null);
   const pinchCenterRef = useRef(null);
@@ -427,7 +460,12 @@ function VisitorMapInner({ navigation, route, focus, onFocusHandled }) {
   const [walkerPos, setWalkerPos] = useState(null);
   const animRef = useRef(null);
   const pulse = useRef(new Animated.Value(0)).current;
+  const youPulse = useRef(new Animated.Value(0)).current;
+  const [youPos, setYouPos] = useState(null); // optional 'You' marker (map coords)
   const legendOpacity = useRef(new Animated.Value(0)).current;
+  // marker visibility filters and favorites
+  const [visibility, setVisibility] = useState({ building: true, court: true, gate: true, tree: true, poi: true });
+  const [favorites, setFavorites] = useState(new Set());
 
   // start pulsing animation when walker is present
   useEffect(() => {
@@ -443,6 +481,21 @@ function VisitorMapInner({ navigation, route, focus, onFocusHandled }) {
     return () => loop.stop();
   }, [walkerPos]);
 
+  // pulse for 'You' marker (if present)
+  useEffect(() => {
+    if (!youPos) return;
+    youPulse.setValue(0);
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(youPulse, { toValue: 1, duration: 900, useNativeDriver: true, easing: Easing.out(Easing.quad) }),
+        Animated.timing(youPulse, { toValue: 0, duration: 900, useNativeDriver: true, easing: Easing.in(Easing.quad) }),
+      ])
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [youPos]);
+
+
   // fade legend in when the map layout becomes available
   useEffect(() => {
     if (mapLayout) {
@@ -451,6 +504,47 @@ function VisitorMapInner({ navigation, route, focus, onFocusHandled }) {
       Animated.timing(legendOpacity, { toValue: 0, duration: 240, useNativeDriver: true }).start();
     }
   }, [mapLayout]);
+
+  // load visibility & favorites from storage
+  useEffect(() => {
+    (async () => {
+      try {
+        const vs = await AsyncStorage.getItem('markerVisibility');
+        if (vs) {
+          const parsed = JSON.parse(vs);
+          setVisibility((s) => ({ ...s, ...parsed }));
+        }
+        const fav = await AsyncStorage.getItem('favoriteMarkers');
+        if (fav) {
+          const arr = JSON.parse(fav || '[]');
+          setFavorites(new Set(Array.isArray(arr) ? arr : []));
+        }
+      } catch (e) {
+        // ignore
+      }
+    })();
+  }, []);
+
+  const saveVisibility = async (next) => {
+    try { await AsyncStorage.setItem('markerVisibility', JSON.stringify(next)); } catch (e) {}
+  };
+  const saveFavorites = async (setVal) => {
+    try { await AsyncStorage.setItem('favoriteMarkers', JSON.stringify(Array.from(setVal))); } catch (e) {}
+  };
+
+  const toggleKind = (kind) => {
+    const next = { ...visibility, [kind]: !visibility[kind] };
+    setVisibility(next);
+    saveVisibility(next);
+    setSpiderfy(null);
+  };
+
+  const toggleFavorite = (id) => {
+    const s = new Set(favorites);
+    if (s.has(id)) s.delete(id); else s.add(id);
+    setFavorites(new Set(s));
+    saveFavorites(s);
+  };
 
   // load buildings/gates from AsyncStorage on mount (backcompat)
   useEffect(() => {
@@ -543,11 +637,19 @@ function VisitorMapInner({ navigation, route, focus, onFocusHandled }) {
     }
   }, [buildings]);
 
-  const filtered = localBuildings.filter((b) => (b.name || "").toLowerCase().includes((search || "").toLowerCase()));
+  const filtered = localBuildings.filter((b) => {
+    const q = (b.name || "").toLowerCase();
+    const matches = q.includes((search || "").toLowerCase());
+    const kind = b.kind || 'building';
+    const visible = !!visibility[kind];
+    return matches && visible;
+  });
   const calculateWalkingTime = (steps) => Math.ceil((Number(steps) || 0) / 80);
   // Use the building's raw coordinates as its logical center for routing/positioning.
   const getCenter = (b) => ({ x: (Number(b.x) || 0), y: (Number(b.y) || 0) });
   const findPrimaryGate = () => localBuildings.find((b) => b.kind === "gate" && b.isMainGate) || localBuildings.find((b) => b.kind === "gate");
+
+  
 
   const handleSearchSubmit = (text) => {
     const q = (text || search || "").toLowerCase().trim();
@@ -1446,6 +1548,34 @@ function VisitorMapInner({ navigation, route, focus, onFocusHandled }) {
         </View>
         <Text style={styles.headerSubtitle}>Tap building to open details</Text>
         <View style={styles.searchBar}><Ionicons name="search" size={18} color="#666" /><TextInput placeholder="Search buildings…" style={styles.searchInput} value={search} onChangeText={setSearch} onSubmitEditing={(e) => handleSearchSubmit(e.nativeEvent.text)} returnKeyType="search" /></View>
+
+        {/* Autocomplete suggestions below search */}
+        {search && String(search).trim().length > 0 ? (
+          <View style={styles.searchDropdown}>
+            {filtered && filtered.length > 0 ? (
+              filtered.slice(0, 6).map((b) => (
+                <TouchableOpacity
+                  key={`sug-${b.id}`}
+                  style={styles.suggestionItem}
+                  onPress={() => {
+                    try { centerOnBuilding(b); } catch (e) {}
+                    setSelectedBuilding(b);
+                    setFloorPlanModalVisible(true);
+                    setSearch("");
+                  }}
+                >
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.suggestionText}>{b.name}</Text>
+                    <Text style={styles.suggestionSub}>{b.department || (b.kind === 'gate' ? 'Gate' : (b.kind || 'Building'))}</Text>
+                  </View>
+                  <Text style={{ color: '#2a7dff', fontWeight: '700' }}>Go</Text>
+                </TouchableOpacity>
+              ))
+            ) : (
+              <View style={styles.suggestionEmpty}><Text style={{ color: '#666' }}>No matches</Text></View>
+            )}
+          </View>
+        ) : null}
       </View>
 
       {/* Alerts for sudden building changes (tap to view) */}
@@ -1587,8 +1717,86 @@ function VisitorMapInner({ navigation, route, focus, onFocusHandled }) {
                     });
                   }
 
-                  // Normal mode: render simple markers at world coords so admin-added items appear
-                  return list.map((b) => {
+                  // Normal mode: compute simple screen-space clusters and render clusters or individual markers
+                  const clusters = (() => {
+                    try {
+                      const s = scaleValueRef.current || 1;
+                      const px = getPanX();
+                      const py = getPanY();
+                      const items = list.map((b) => ({ ...b, _screenX: (Number(b.x) || 0) * s + px, _screenY: (Number(b.y) || 0) * s + py, _clusterable: !(['tree','court','gate'].includes(b.kind)) }));
+                      const used = new Set();
+                      const out = [];
+                      const THRESH = 32; // pixels (reduced to avoid over-clustering)
+                      for (let i = 0; i < items.length; i++) {
+                        if (used.has(i)) continue;
+                        const a = items[i];
+                        // if the item is not clusterable (eg. trees), keep it as single member
+                        if (!a._clusterable) {
+                          used.add(i);
+                          out.push({ members: [a] });
+                          continue;
+                        }
+                        const cluster = { members: [a], sx: a._screenX, sy: a._screenY };
+                        used.add(i);
+                        for (let j = i + 1; j < items.length; j++) {
+                          if (used.has(j)) continue;
+                          const b = items[j];
+                          // never cluster with non-clusterable items
+                          if (!b._clusterable) continue;
+                          const dx = a._screenX - b._screenX;
+                          const dy = a._screenY - b._screenY;
+                          if (Math.sqrt(dx * dx + dy * dy) <= THRESH) {
+                            cluster.members.push(b);
+                            used.add(j);
+                          }
+                        }
+                        out.push(cluster);
+                      }
+                      return out.map((c) => {
+                        if (!c || !c.members) return null;
+                        if (c.members.length === 1) return { type: 'item', item: c.members[0] };
+                        const avgX = c.members.reduce((s, m) => s + (Number(m.x) || 0), 0) / c.members.length;
+                        const avgY = c.members.reduce((s, m) => s + (Number(m.y) || 0), 0) / c.members.length;
+                        return { type: 'cluster', count: c.members.length, x: avgX, y: avgY, members: c.members };
+                      }).filter(Boolean);
+                    } catch (e) {
+                      return list.map((b) => ({ type: 'item', item: b }));
+                    }
+                  })();
+
+                  return clusters.map((entry, idx) => {
+                    if (!entry) return null;
+                    if (entry.type === 'cluster') {
+                      const cx = Number(entry.x) || 0;
+                      const cy = Number(entry.y) || 0;
+                      const cnt = entry.count || 0;
+                      const r = Math.min(28, 8 + cnt * 3);
+                      return (
+                        <G key={`cluster-${idx}`}>
+                          <G onPress={() => handleClusterTap(entry)}>
+                            <Circle cx={cx} cy={cy} r={r} fill="#2a7dff" stroke="#123" strokeWidth={1.2} opacity={0.95} />
+                            <SvgText x={cx} y={cy + 4} fontSize={12} fontWeight="800" fill="#fff" textAnchor="middle">{String(cnt)}</SvgText>
+                          </G>
+                          {/* render spiderfy items if active for this cluster */}
+                          {spiderfy && spiderfy.center && spiderfy.center.x === cx && spiderfy.center.y === cy ? (
+                            spiderfy.positions.map((p, i) => {
+                              const mb = p.member;
+                              const mbx = Number(p.x) || 0;
+                              const mby = Number(p.y) || 0;
+                              // render a small tappable circle with glyph
+                              return (
+                                <G key={`sp-${idx}-${i}`} onPress={() => { setSelectedBuilding(mb); setSpiderfy(null); setFloorPlanModalVisible(true); }}>
+                                  <Circle cx={mbx} cy={mby} r={18} fill="#fff" stroke="#2a7dff" strokeWidth={2} />
+                                  <SvgText x={mbx} y={mby + 4} fontSize={12} fontWeight="800" fill="#2a7dff" textAnchor="middle">{mb.name && String(mb.name).slice(0,1)}</SvgText>
+                                </G>
+                              );
+                            })
+                          ) : null}
+                        </G>
+                      );
+                    }
+
+                    const b = entry.item;
                     const bx = Number(b.x) || 0;
                     const by = Number(b.y) || 0;
                     const baseColor = b.color || TYPE_PRESETS[b.type || "general"] || TYPE_PRESETS.general;
@@ -1690,16 +1898,27 @@ function VisitorMapInner({ navigation, route, focus, onFocusHandled }) {
                       // default: basketball-like rounded rectangle with center line and markers
                       const centerX = bx;
                       const centerY = by;
-                      const backColor = courtColor;
+                      const backColor = courtColor || '#d9b382';
+                      // render as rounded square with basketball glyph (white)
+                      const sizeR = Math.min(w, h) * 0.45;
+                      const ballR = Math.max(6, Math.floor(sizeR * 0.72));
+                      const cx = centerX;
+                      const cy = centerY;
                       return (
                         <G key={`court-${b.id}`} onPressIn={() => startLongPress(b)} onPressOut={() => endLongPress(b)} onPress={() => { setSelectedBuilding(b); }}>
-                          <Rect x={left} y={top} width={w} height={h} rx={3} fill={backColor} stroke={darken(backColor, 0.15)} strokeWidth={1.5} />
-                          {/* center line */}
-                          <Path d={`M ${centerX},${top + 4} L ${centerX},${top + h - 4}`} stroke={darken(backColor, 0.6)} strokeWidth={2.0} strokeLinecap="square" />
-                          {/* left marker */}
-                          <Path d={`M ${left + 7},${centerY - 4} L ${left + 7},${centerY + 4}`} stroke={darken(backColor, 0.6)} strokeWidth={1.8} />
-                          {/* right marker */}
-                          <Path d={`M ${left + w - 7},${centerY - 4} L ${left + w - 7},${centerY + 4}`} stroke={darken(backColor, 0.6)} strokeWidth={1.8} />
+                          {/* rounded square background */}
+                          <Rect x={left} y={top} width={w} height={h} rx={8} fill={backColor} stroke={darken(backColor, 0.12)} strokeWidth={1.2} />
+
+                          {/* basketball white circle */}
+                          <Circle cx={cx} cy={cy} r={ballR} fill="none" stroke="#fff" strokeWidth={1.6} />
+
+                          {/* vertical curved seams */}
+                          <Path d={`M ${cx},${cy - ballR} Q ${cx + ballR * 0.5},${cy} ${cx},${cy + ballR}`} stroke="#fff" strokeWidth={1.4} fill="none" strokeLinecap="round" />
+                          <Path d={`M ${cx},${cy - ballR} Q ${cx - ballR * 0.5},${cy} ${cx},${cy + ballR}`} stroke="#fff" strokeWidth={1.4} fill="none" strokeLinecap="round" />
+
+                          {/* horizontal curved seams */}
+                          <Path d={`M ${cx - ballR},${cy} Q ${cx},${cy - ballR * 0.45} ${cx + ballR},${cy}`} stroke="#fff" strokeWidth={1.4} fill="none" strokeLinecap="round" />
+                          <Path d={`M ${cx - ballR},${cy} Q ${cx},${cy + ballR * 0.45} ${cx + ballR},${cy}`} stroke="#fff" strokeWidth={1.4} fill="none" strokeLinecap="round" />
                         </G>
                       );
                     }
@@ -1791,16 +2010,29 @@ function VisitorMapInner({ navigation, route, focus, onFocusHandled }) {
                 const by = Number(b.y) || 0;
                 const size = b.kind === 'tree' ? 36 : 56;
                 return (
-                  <TouchableOpacity
-                    key={`touch-${b.id}`}
-                    activeOpacity={0.9}
-                    onPress={() => { setSelectedBuilding(b); setFloorPlanModalVisible(false); }}
-                    onLongPress={() => { startLongPress(b); }}
-                    onPressOut={() => { endLongPress(b); }}
-                    style={{ position: 'absolute', left: bx - size / 2, top: by - size / 2, width: size, height: size, backgroundColor: 'transparent', alignItems: 'center', justifyContent: 'center' }}
-                  />
+                  <React.Fragment key={`touch-${b.id}`}>
+                    <TouchableOpacity
+                      activeOpacity={0.9}
+                      onPress={() => { setSelectedBuilding(b); setFloorPlanModalVisible(false); }}
+                      onLongPress={() => { startLongPress(b); }}
+                      onPressOut={() => { endLongPress(b); }}
+                      style={{ position: 'absolute', left: bx - size / 2, top: by - size / 2, width: size, height: size, backgroundColor: 'transparent', alignItems: 'center', justifyContent: 'center' }}
+                    />
+                    <TouchableOpacity
+                      key={`fav-${b.id}`}
+                      onPress={(e) => { e.stopPropagation && e.stopPropagation(); toggleFavorite(b.id); }}
+                      style={{ position: 'absolute', left: bx + size / 2 - 20, top: by - size / 2 - 10, width: 28, height: 28, alignItems: 'center', justifyContent: 'center' }}
+                    >
+                      <Ionicons name={favorites.has(b.id) ? 'star' : 'star-outline'} size={18} color={favorites.has(b.id) ? '#ffd700' : 'rgba(0,0,0,0.45)'} />
+                    </TouchableOpacity>
+                  </React.Fragment>
                 );
               })}
+
+              {/* If spiderfy active, render tappable overlays for spiderfied items so touches land properly */}
+              {spiderfy && spiderfy.positions ? spiderfy.positions.map((p, i) => (
+                <TouchableOpacity key={`sp-touch-${i}`} style={{ position: 'absolute', left: (p.x || 0) - 22, top: (p.y || 0) - 22, width: 44, height: 44, backgroundColor: 'transparent' }} onPress={() => { setSelectedBuilding(p.member); setFloorPlanModalVisible(true); setSpiderfy(null); }} />
+              )) : null}
 
               <Text style={styles.mapHint}>Tap a building or court to open details • Use modal to add to route</Text>
 
@@ -1829,15 +2061,49 @@ function VisitorMapInner({ navigation, route, focus, onFocusHandled }) {
                 </View>
               )}
 
+              {youPos && (
+                <View pointerEvents="none" style={{ position: "absolute", left: youPos.x - 18, top: youPos.y - 18, width: 36, height: 36, alignItems: "center", justifyContent: "center" }}>
+                  <Animated.View
+                    style={[
+                      styles.youPulseRing,
+                      {
+                        transform: [
+                          {
+                            scale: Animated.multiply(
+                              youPulse.interpolate({ inputRange: [0, 1], outputRange: [0.6, 2.2] }),
+                              Animated.divide(1, scale)
+                            ),
+                          },
+                        ],
+                        opacity: youPulse.interpolate({ inputRange: [0, 1], outputRange: [0.45, 0] }),
+                      },
+                    ]}
+                  />
+                  <View style={[styles.youDot]} />
+                </View>
+              )}
+
+              
+
                   {mode === "diorama" && <View pointerEvents="none" style={styles.vignette} />}
                   </Animated.View>
         </TapGestureHandler>
         </PinchGestureHandler>
 
-          <Animated.View pointerEvents="box-none" style={[styles.legendContainer, { opacity: legendOpacity }]}>
+            <Animated.View pointerEvents="box-none" style={[styles.legendContainer, { opacity: legendOpacity }]}>
             <View style={styles.legendItem}><View style={[styles.legendSwatch, { backgroundColor: "#fff" }]} /><Text style={styles.legendLabel}>Building</Text></View>
             <View style={styles.legendItem}><View style={[styles.legendSwatch, { backgroundColor: "#2a7dff", borderRadius: 8 }]} /><Text style={styles.legendLabel}>Gate</Text></View>
             <View style={styles.legendItem}><View style={[styles.legendSwatch, { backgroundColor: "#1faa59", width: 12, height: 12, borderRadius: 6 }]} /><Text style={styles.legendLabel}>You</Text></View>
+
+            {/* Inline filter chips */}
+            <View style={{ flexDirection: 'row', marginTop: 8, gap: 8 }}>
+              <TouchableOpacity onPress={() => toggleKind('building')} style={[styles.filterChip, visibility.building ? styles.filterOn : styles.filterOff]}><Text style={styles.filterText}>Buildings</Text></TouchableOpacity>
+              <TouchableOpacity onPress={() => toggleKind('court')} style={[styles.filterChip, visibility.court ? styles.filterOn : styles.filterOff]}><Text style={styles.filterText}>Courts</Text></TouchableOpacity>
+              <TouchableOpacity onPress={() => toggleKind('gate')} style={[styles.filterChip, visibility.gate ? styles.filterOn : styles.filterOff]}><Text style={styles.filterText}>Gates</Text></TouchableOpacity>
+              <TouchableOpacity onPress={() => toggleKind('tree')} style={[styles.filterChip, visibility.tree ? styles.filterOn : styles.filterOff]}><Text style={styles.filterText}>Trees</Text></TouchableOpacity>
+              <TouchableOpacity onPress={() => toggleKind('poi')} style={[styles.filterChip, visibility.poi ? styles.filterOn : styles.filterOff]}><Text style={styles.filterText}>POIs</Text></TouchableOpacity>
+            </View>
+
             <View style={[styles.legendItem, { marginTop: 6 }]}> <View style={[styles.scaleBar, { width: computedScaleBarWidth }]} /><Text style={[styles.legendLabel, { marginLeft: 8 }]}>{"100 m"}</Text></View>
           </Animated.View>
 
@@ -2110,6 +2376,11 @@ const styles = StyleSheet.create({
   /* Search */
   searchBar: { flexDirection: "row", alignItems: "center", backgroundColor: "white", paddingHorizontal: 12, borderRadius: 12, height: 40 },
   searchInput: { marginLeft: 8, flex: 1 },
+  searchDropdown: { marginTop: 8, backgroundColor: 'white', marginHorizontal: -2, borderRadius: 10, paddingVertical: 6, paddingHorizontal: 8, elevation: 8, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.08, shadowRadius: 8 },
+  suggestionItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 8, paddingHorizontal: 8, borderBottomColor: 'rgba(0,0,0,0.04)', borderBottomWidth: 1 },
+  suggestionText: { fontSize: 14, fontWeight: '700', color: '#222' },
+  suggestionSub: { fontSize: 12, color: '#666', marginTop: 2 },
+  suggestionEmpty: { padding: 12, alignItems: 'center', justifyContent: 'center' },
 
   /* Map card */
   mapCard: { marginTop: 20, marginHorizontal: 20, height: Dimensions.get('window').height * 0.9, backgroundColor: lightGreen, borderRadius: 20, padding: 10, overflow: "hidden" },
@@ -2173,6 +2444,10 @@ const styles = StyleSheet.create({
   pulseRing: { position: "absolute", width: 48, height: 48, borderRadius: 24, backgroundColor: "rgba(31,150,70,0.12)", borderWidth: 1, borderColor: "rgba(31,150,70,0.18)" },
   pulseDot: { width: 14, height: 14, borderRadius: 8, backgroundColor: "#1faa59", elevation: 8 },
   pulseDotDiorama: { shadowColor: "#000", shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.35, shadowRadius: 6 },
+  youPulseRing: { position: "absolute", width: 36, height: 36, borderRadius: 18, backgroundColor: "rgba(26,150,80,0.12)", borderWidth: 1, borderColor: "rgba(26,150,80,0.16)" },
+  youDot: { width: 12, height: 12, borderRadius: 8, backgroundColor: "#1faa59", borderWidth: 2, borderColor: "#fff" },
+
+  
 
   /* legend */
   legendContainer: { position: "absolute", right: 12, top: 12, backgroundColor: "rgba(255,255,255,0.94)", padding: 8, borderRadius: 10, elevation: 8, shadowColor: "#000", shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.12, shadowRadius: 8 },
@@ -2180,6 +2455,11 @@ const styles = StyleSheet.create({
   legendSwatch: { width: 16, height: 12, borderRadius: 3, borderWidth: 0.5, borderColor: "rgba(0,0,0,0.06)" },
   legendLabel: { fontSize: 12, color: "#333" },
   scaleBar: { width: 36, height: 6, backgroundColor: "#333", borderRadius: 4, opacity: 0.9 },
+
+  filterChip: { paddingVertical: 6, paddingHorizontal: 8, borderRadius: 12, borderWidth: 1, borderColor: 'rgba(0,0,0,0.06)' },
+  filterOn: { backgroundColor: '#1faa59', borderColor: 'rgba(0,0,0,0.06)' },
+  filterOff: { backgroundColor: '#fff', borderColor: 'rgba(0,0,0,0.06)' },
+  filterText: { fontSize: 12, color: '#222' },
 
   roomChip: { backgroundColor: "#f1f1f1", paddingVertical: 6, paddingHorizontal: 10, borderRadius: 8, marginRight: 6, marginBottom: 6 },
 });

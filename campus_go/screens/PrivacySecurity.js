@@ -94,6 +94,15 @@ export default function PrivacySecurity({ navigation }) {
       if (lu && lu.idNumber) await AsyncStorage.setItem(`reminderLead_${lu.idNumber}`, String(mins));
       // also save global default for fallback
       await AsyncStorage.setItem('reminderLeadMins', String(mins));
+      // reschedule notifications immediately for this user (if schedule exists)
+      try {
+        if (lu && lu.idNumber) {
+          const schedStr = await AsyncStorage.getItem(`userSchedule_${lu.idNumber}`);
+          const sched = schedStr ? JSON.parse(schedStr) : [];
+          const { scheduleUserReminders } = require('../utils/notifications');
+          if (scheduleUserReminders) await scheduleUserReminders(lu.idNumber, sched);
+        }
+      } catch (e) {}
     } catch (e) {}
   };
 
