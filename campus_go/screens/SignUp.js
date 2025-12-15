@@ -10,6 +10,7 @@ import {
 import { LinearGradient } from "expo-linear-gradient";
 import { Picker } from "@react-native-picker/picker";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { Ionicons } from '@expo/vector-icons';
 
 export default function SignUp({ navigation }) {
   const [fullName, setFullName] = useState("");
@@ -18,6 +19,8 @@ export default function SignUp({ navigation }) {
   const [role, setRole] = useState("Student");
   const [password, setPassword] = useState("");
   const [confirmPass, setConfirmPass] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
 
   const handleSignup = async () => {
     // empty fields
@@ -119,22 +122,42 @@ export default function SignUp({ navigation }) {
             </View>
 
             <Text style={styles.label}>Password</Text>
-            <TextInput
-              placeholder="Enter password"
-              secureTextEntry
-              style={styles.input}
-              value={password}
-              onChangeText={setPassword}
-            />
+            <View style={styles.inputRow}>
+              <TextInput
+                placeholder="Enter password"
+                secureTextEntry={!showPassword}
+                style={[styles.input, { paddingRight: 44 }]}
+                value={password}
+                onChangeText={setPassword}
+                autoCapitalize="none"
+              />
+              <TouchableOpacity
+                onPress={() => setShowPassword((s) => !s)}
+                style={styles.eyeButton}
+                accessibilityLabel={showPassword ? 'Hide password' : 'Show password'}
+              >
+                <Ionicons name={showPassword ? 'eye-off' : 'eye'} size={20} color="#444" />
+              </TouchableOpacity>
+            </View>
 
             <Text style={styles.label}>Confirm Password</Text>
-            <TextInput
-              placeholder="Confirm password"
-              secureTextEntry
-              style={styles.input}
-              value={confirmPass}
-              onChangeText={setConfirmPass}
-            />
+            <View style={styles.inputRow}>
+              <TextInput
+                placeholder="Confirm password"
+                secureTextEntry={!showConfirm}
+                style={[styles.input, { paddingRight: 44 }]}
+                value={confirmPass}
+                onChangeText={setConfirmPass}
+                autoCapitalize="none"
+              />
+              <TouchableOpacity
+                onPress={() => setShowConfirm((s) => !s)}
+                style={styles.eyeButton}
+                accessibilityLabel={showConfirm ? 'Hide confirm password' : 'Show confirm password'}
+              >
+                <Ionicons name={showConfirm ? 'eye-off' : 'eye'} size={20} color="#444" />
+              </TouchableOpacity>
+            </View>
 
             <TouchableOpacity style={styles.signupBtn} onPress={handleSignup}>
               <Text style={styles.signupText}>Sign Up</Text>
@@ -170,6 +193,19 @@ const styles = StyleSheet.create({
     padding: 12,
     borderRadius: 10,
     marginTop: 5,
+  },
+  inputRow: {
+    position: 'relative',
+    justifyContent: 'center',
+  },
+  eyeButton: {
+    position: 'absolute',
+    right: 10,
+    top: 12,
+    width: 28,
+    height: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   pickerBox: {
     backgroundColor: "#eee",

@@ -12,10 +12,12 @@ import {
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { Ionicons } from '@expo/vector-icons';
 
 export default function Login({ navigation }) {
   const [emailOrId, setEmailOrId] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false); // no auto-redirect
 
   const handleLogin = async () => {
@@ -81,13 +83,23 @@ export default function Login({ navigation }) {
             />
 
             <Text style={styles.label}>Password</Text>
-            <TextInput
-              placeholder="Enter your password"
-              secureTextEntry
-              style={styles.input}
-              value={password}
-              onChangeText={setPassword}
-            />
+            <View style={styles.inputRow}>
+              <TextInput
+                placeholder="Enter your password"
+                secureTextEntry={!showPassword}
+                style={[styles.input, { paddingRight: 44 }]}
+                value={password}
+                onChangeText={setPassword}
+                autoCapitalize="none"
+              />
+              <TouchableOpacity
+                onPress={() => setShowPassword((s) => !s)}
+                style={styles.eyeButton}
+                accessibilityLabel={showPassword ? 'Hide password' : 'Show password'}
+              >
+                <Ionicons name={showPassword ? 'eye-off' : 'eye'} size={20} color="#444" />
+              </TouchableOpacity>
+            </View>
 
             <TouchableOpacity style={styles.loginBtn} onPress={handleLogin}>
               <Text style={styles.loginText}>Login</Text>
@@ -99,7 +111,7 @@ export default function Login({ navigation }) {
 
             <TouchableOpacity onPress={() => navigation.navigate("SignUp")}>
               <Text style={styles.signupText}>
-                Don’t have an account? <Text style={{ fontWeight: "bold" }}>Sign up</Text>
+                Don’t have an account? <Text style={{ fontWeight: "bold", color: '#167CF2' }}>Sign up</Text>
               </Text>
             </TouchableOpacity>
           </View>
@@ -140,9 +152,24 @@ const styles = StyleSheet.create({
   label: { marginTop: 10, fontWeight: "600" },
   input: {
     backgroundColor: "#eee",
-    padding: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    height: 44,
     borderRadius: 10,
     marginTop: 5,
+  },
+  inputRow: {
+    position: 'relative',
+    justifyContent: 'center',
+  },
+  eyeButton: {
+    position: 'absolute',
+    right: 10,
+    top: 12,
+    width: 28,
+    height: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   loginBtn: {
     backgroundColor: "black",

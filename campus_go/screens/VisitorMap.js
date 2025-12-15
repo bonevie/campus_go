@@ -466,6 +466,7 @@ function VisitorMapInner({ navigation, route, focus, onFocusHandled }) {
   // marker visibility filters and favorites
   const [visibility, setVisibility] = useState({ building: true, court: true, gate: true, tree: true, poi: true });
   const [favorites, setFavorites] = useState(new Set());
+  const [loggedUser, setLoggedUser] = useState(null);
 
   // start pulsing animation when walker is present
   useEffect(() => {
@@ -514,7 +515,24 @@ function VisitorMapInner({ navigation, route, focus, onFocusHandled }) {
           const parsed = JSON.parse(vs);
           setVisibility((s) => ({ ...s, ...parsed }));
         }
-        const fav = await AsyncStorage.getItem('favoriteMarkers');
+        // load logged user (if any) so favorites are stored per-user
+        const lu = await AsyncStorage.getItem('loggedUser');
+        const parsedUser = lu ? JSON.parse(lu) : null;
+        if (parsedUser) setLoggedUser(parsedUser);
+
+        const favKeyFor = (user) => {
+          if (!user) return 'favoriteMarkers_visitor';
+          return `favoriteMarkers_${(user.idNumber || user.email || user.id || 'user')}`;
+        };
+
+        // try per-user favorites first, fall back to legacy global key if needed
+        const favKey = favKeyFor(parsedUser);
+        let fav = await AsyncStorage.getItem(favKey);
+        if (!fav) {
+          // fallback to legacy global favorites for older installs
+          const legacy = await AsyncStorage.getItem('favoriteMarkers');
+          if (legacy) fav = legacy;
+        }
         if (fav) {
           const arr = JSON.parse(fav || '[]');
           setFavorites(new Set(Array.isArray(arr) ? arr : []));
@@ -528,8 +546,12 @@ function VisitorMapInner({ navigation, route, focus, onFocusHandled }) {
   const saveVisibility = async (next) => {
     try { await AsyncStorage.setItem('markerVisibility', JSON.stringify(next)); } catch (e) {}
   };
-  const saveFavorites = async (setVal) => {
-    try { await AsyncStorage.setItem('favoriteMarkers', JSON.stringify(Array.from(setVal))); } catch (e) {}
+  const saveFavorites = async (setVal, userParam) => {
+    try {
+      const user = userParam || loggedUser;
+      const key = user ? `favoriteMarkers_${(user.idNumber || user.email || user.id || 'user')}` : 'favoriteMarkers_visitor';
+      await AsyncStorage.setItem(key, JSON.stringify(Array.from(setVal)));
+    } catch (e) {}
   };
 
   const toggleKind = (kind) => {
@@ -539,11 +561,25 @@ function VisitorMapInner({ navigation, route, focus, onFocusHandled }) {
     setSpiderfy(null);
   };
 
-  const toggleFavorite = (id) => {
-    const s = new Set(favorites);
-    if (s.has(id)) s.delete(id); else s.add(id);
-    setFavorites(new Set(s));
-    saveFavorites(s);
+  const toggleFavorite = async (id) => {
+    try {
+      let user = loggedUser;
+      if (!user) {
+        const lu = await AsyncStorage.getItem('loggedUser');
+        user = lu ? JSON.parse(lu) : null;
+      }
+      if (!user) {
+        Alert.alert('Login required', 'Please log in to favorite buildings.');
+        return;
+      }
+
+      const s = new Set(favorites);
+      if (s.has(id)) s.delete(id); else s.add(id);
+      setFavorites(new Set(s));
+      await saveFavorites(s, user);
+    } catch (e) {
+      // ignore save errors
+    }
   };
 
   // load buildings/gates from AsyncStorage on mount (backcompat)
@@ -2018,13 +2054,15 @@ function VisitorMapInner({ navigation, route, focus, onFocusHandled }) {
                       onPressOut={() => { endLongPress(b); }}
                       style={{ position: 'absolute', left: bx - size / 2, top: by - size / 2, width: size, height: size, backgroundColor: 'transparent', alignItems: 'center', justifyContent: 'center' }}
                     />
-                    <TouchableOpacity
-                      key={`fav-${b.id}`}
-                      onPress={(e) => { e.stopPropagation && e.stopPropagation(); toggleFavorite(b.id); }}
-                      style={{ position: 'absolute', left: bx + size / 2 - 20, top: by - size / 2 - 10, width: 28, height: 28, alignItems: 'center', justifyContent: 'center' }}
-                    >
-                      <Ionicons name={favorites.has(b.id) ? 'star' : 'star-outline'} size={18} color={favorites.has(b.id) ? '#ffd700' : 'rgba(0,0,0,0.45)'} />
-                    </TouchableOpacity>
+                    {b.kind === 'building' ? (
+                      <TouchableOpacity
+                        key={`fav-${b.id}`}
+                        onPress={(e) => { e.stopPropagation && e.stopPropagation(); toggleFavorite(b.id); }}
+                        style={{ position: 'absolute', left: bx + size / 2 - 20, top: by - size / 2 - 10, width: 28, height: 28, alignItems: 'center', justifyContent: 'center' }}
+                      >
+                        <Ionicons name={favorites.has(b.id) ? 'star' : 'star-outline'} size={18} color={favorites.has(b.id) ? '#ffd700' : 'rgba(0,0,0,0.45)'} />
+                      </TouchableOpacity>
+                    ) : null}
                   </React.Fragment>
                 );
               })}
@@ -2266,13 +2304,12 @@ function VisitorMapInner({ navigation, route, focus, onFocusHandled }) {
                               const cy = (poly.reduce((s, p) => s + p.y, 0) / poly.length) * 180;
                               const isActive = selectedRoom === name;
 
-                              // compute pixel bbox to detect very small rooms and render a marker
                               const xs = poly.map((p) => p.x * VISITOR_MODAL_INNER);
                               const ys = poly.map((p) => p.y * 180);
                               const minX = Math.min(...xs); const maxX = Math.max(...xs);
                               const minY = Math.min(...ys); const maxY = Math.max(...ys);
                               const wPx = Math.max(0, maxX - minX); const hPx = Math.max(0, maxY - minY);
-                              const isTiny = Math.min(wPx, hPx) < 28; // threshold in px
+                              const isTiny = Math.min(wPx, hPx) < 28;
 
                               const polyFill = isActive ? "rgba(30,200,80,0.45)" : (isTiny ? "rgba(30,200,30,0.22)" : "rgba(30,200,30,0.12)");
                               const polyStroke = isActive ? darken('#1faa59', 0.12) : 'rgba(0,0,0,0.08)';
@@ -2282,7 +2319,6 @@ function VisitorMapInner({ navigation, route, focus, onFocusHandled }) {
                                 <G key={`${selectedBuilding?.id}-${name}-${idx}`}>
                                   <Polygon points={pts} fill={polyFill} stroke={polyStroke} strokeWidth={strokeW} />
                                   {isTiny ? (
-                                    // draw a clear circle marker at centroid for tiny rooms
                                     <G>
                                       <Circle cx={cx} cy={cy} r={isActive ? 10 : 8} fill={isActive ? 'rgba(31,150,70,0.95)' : 'rgba(255,255,255,0.9)'} stroke={isActive ? darken('#1faa59', 0.18) : 'rgba(0,0,0,0.12)'} strokeWidth={isActive ? 2 : 1} />
                                       <Circle cx={cx} cy={cy} r={isActive ? 5 : 4} fill={isActive ? '#fff' : '#1faa59'} opacity={isActive ? 0.14 : 0.85} />

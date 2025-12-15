@@ -18,6 +18,9 @@ export default function PrivacySecurity({ navigation }) {
   const [currentPass, setCurrentPass] = useState("");
   const [newPass, setNewPass] = useState("");
   const [confirmPass, setConfirmPass] = useState("");
+  const [showCurrent, setShowCurrent] = useState(false);
+  const [showNew, setShowNew] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
 
   const [loggedUser, setLoggedUser] = useState(null);
 
@@ -238,29 +241,44 @@ export default function PrivacySecurity({ navigation }) {
         {/* Change Password */}
         <Text style={styles.sectionTitle}>Change Password</Text>
 
-        <TextInput
-          style={styles.input}
-          placeholder="Current Password"
-          secureTextEntry
-          value={currentPass}
-          onChangeText={setCurrentPass}
-        />
+        <View style={styles.inputRow}>
+          <TextInput
+            style={styles.input}
+            placeholder="Current Password"
+            secureTextEntry={!showCurrent}
+            value={currentPass}
+            onChangeText={setCurrentPass}
+          />
+          <TouchableOpacity style={styles.eyeButton} onPress={() => setShowCurrent(s => !s)}>
+            <Ionicons name={showCurrent ? 'eye-off' : 'eye'} size={18} color="#444" />
+          </TouchableOpacity>
+        </View>
 
-        <TextInput
-          style={styles.input}
-          placeholder="New Password"
-          secureTextEntry
-          value={newPass}
-          onChangeText={setNewPass}
-        />
+        <View style={styles.inputRow}>
+          <TextInput
+            style={styles.input}
+            placeholder="New Password"
+            secureTextEntry={!showNew}
+            value={newPass}
+            onChangeText={setNewPass}
+          />
+          <TouchableOpacity style={styles.eyeButton} onPress={() => setShowNew(s => !s)}>
+            <Ionicons name={showNew ? 'eye-off' : 'eye'} size={18} color="#444" />
+          </TouchableOpacity>
+        </View>
 
-        <TextInput
-          style={styles.input}
-          placeholder="Confirm New Password"
-          secureTextEntry
-          value={confirmPass}
-          onChangeText={setConfirmPass}
-        />
+        <View style={styles.inputRow}>
+          <TextInput
+            style={styles.input}
+            placeholder="Confirm New Password"
+            secureTextEntry={!showConfirm}
+            value={confirmPass}
+            onChangeText={setConfirmPass}
+          />
+          <TouchableOpacity style={styles.eyeButton} onPress={() => setShowConfirm(s => !s)}>
+            <Ionicons name={showConfirm ? 'eye-off' : 'eye'} size={18} color="#444" />
+          </TouchableOpacity>
+        </View>
 
         <TouchableOpacity style={styles.saveBtn} onPress={changePassword}>
           <Text style={styles.saveBtnText}>Update Password</Text>
@@ -368,6 +386,19 @@ const styles = StyleSheet.create({
     marginBottom: 10,
     borderWidth: 1,
     borderColor: "#e5e5e5",
+  },
+  inputRow: {
+    position: 'relative',
+    justifyContent: 'center',
+  },
+  eyeButton: {
+    position: 'absolute',
+    right: 10,
+    top: 10,
+    width: 28,
+    height: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 
   saveBtn: {
